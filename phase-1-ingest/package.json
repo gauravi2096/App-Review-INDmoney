@@ -1,0 +1,26 @@
+{
+  "name": "product-pulse-phase-1-ingest",
+  "version": "1.0.0",
+  "description": "Phase 1: Fetch INDmoney reviews via google-play-scraper, filter 8-12 weeks, validate, persist to DB",
+  "type": "module",
+  "main": "run.js",
+  "scripts": {
+    "ingest": "node run.js",
+    "view-reviews": "node view-reviews.js",
+    "export-reviews": "node export-reviews.js",
+    "test": "node test/dateFilter.test.js && node test/languageFilter.test.js && node test/validator.test.js"
+  },
+  "keywords": [
+    "product-pulse",
+    "ingest",
+    "google-play",
+    "reviews"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "better-sqlite3": "^11.6.0",
+    "franc": "^6.2.0",
+    "google-play-scraper": "^10.1.2",
+    "open": "^11.0.0"
+  }
+}

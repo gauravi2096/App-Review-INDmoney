@@ -1,0 +1,18 @@
+{
+  "name": "product-pulse-phase-5-email",
+  "version": "1.0.0",
+  "description": "Phase 5: Send weekly one-pager to recipient list via email; record delivery status",
+  "type": "module",
+  "main": "run.js",
+  "scripts": {
+    "send": "node run.js",
+    "add-recipient": "node add-recipient.js"
+  },
+  "keywords": ["product-pulse", "email", "send"],
+  "license": "MIT",
+  "dependencies": {
+    "better-sqlite3": "^11.6.0",
+    "dotenv": "^17.3.1",
+    "nodemailer": "^6.9.16"
+  }
+}

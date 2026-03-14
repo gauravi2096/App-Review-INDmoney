@@ -1,0 +1,16 @@
+{
+  "name": "product-pulse-phase-2-clean",
+  "version": "1.0.0",
+  "description": "Phase 2: Clean and structure raw reviews; normalize text and dates, anonymize, persist cleaned_reviews",
+  "type": "module",
+  "main": "run.js",
+  "scripts": {
+    "clean": "node run.js",
+    "test": "node test/textNormalizer.test.js && node test/dateNormalizer.test.js && node test/anonymizer.test.js"
+  },
+  "keywords": ["product-pulse", "clean", "reviews", "anonymize"],
+  "license": "MIT",
+  "dependencies": {
+    "better-sqlite3": "^11.6.0"
+  }
+}

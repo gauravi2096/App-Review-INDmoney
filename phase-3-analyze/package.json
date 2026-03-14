@@ -1,0 +1,25 @@
+{
+  "name": "product-pulse-phase-3-analyze",
+  "version": "1.0.0",
+  "description": "Phase 3: LLM analysis of cleaned reviews; themes, quotes, action ideas; Groq or Gemini",
+  "type": "module",
+  "main": "run.js",
+  "scripts": {
+    "analyze": "node run.js",
+    "export-analysis": "node export-analysis.js",
+    "test": "node test/tokenEstimator.test.js && node test/responseParser.test.js && node test/batcher.test.js"
+  },
+  "keywords": [
+    "product-pulse",
+    "llm",
+    "groq",
+    "gemini",
+    "analysis"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@google/genai": "^1.44.0",
+    "better-sqlite3": "^11.6.0",
+    "dotenv": "^17.3.1"
+  }
+}

@@ -1,0 +1,15 @@
+# Secrets and env (never commit)
+.env
+.env.*
+!.env.example
+
+# Dependencies
+node_modules/
+
+# SQLite DB (optional: remove if you want to track a seed DB)
+*.db
+phase-1-ingest/data/*.db
+
+# Logs and OS
+*.log
+.DS_Store

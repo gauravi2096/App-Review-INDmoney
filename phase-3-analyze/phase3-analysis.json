@@ -1,0 +1,50 @@
+{
+  "run_id": "run_1773225025485_yer128yqu",
+  "analyzed_at": "2026-03-12T16:42:44.936Z",
+  "themes": [
+    {
+      "label": "Poor Customer Support",
+      "description": "Users report difficulty in getting help from the support team, with some experiencing unhelpful or dismissive responses.",
+      "reviewCount": 45
+    },
+    {
+      "label": "App Performance Issues",
+      "description": "Users report problems with app stability, slow performance, and syncing issues.",
+      "reviewCount": 34
+    },
+    {
+      "label": "User Experience and Interface",
+      "description": "Users are unhappy with the app's user experience, interface, and navigation.",
+      "reviewCount": 34
+    },
+    {
+      "label": "Features and Functionality",
+      "description": "Users are requesting additional features, improvements to existing ones, and better organization of the app.",
+      "reviewCount": 27
+    },
+    {
+      "label": "Security and Trust",
+      "description": "Users are concerned about data sharing, security, and the trustworthiness of the app.",
+      "reviewCount": 17
+    }
+  ],
+  "quotes": [
+    {
+      "text": "most of time unable to purchase any stocks it keeps says 'something went wrong' please fix this to retain your customers",
+      "rating": 1
+    },
+    {
+      "text": "this is the best app for traders and investors for the long term because in this app brokerage charges are so negligible",
+      "rating": 5
+    },
+    {
+      "text": "The worst part is the customer support... you can request a call back... but that's only a dream... you never get a call back from IND money...",
+      "rating": 2
+    }
+  ],
+  "actionIdeas": [
+    "Implement a more robust customer support system with faster response times and better follow-up.",
+    "Simplify the user interface, improve navigation, and add features to make the app more user-friendly.",
+    "Fix bugs and glitches in the app to improve user experience and add more features to make the app more user-friendly."
+  ]
+}

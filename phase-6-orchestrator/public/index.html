@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Product Pulse – Recipients & Delivery</title>
+  <style>
+    :root { --bg: #0f1419; --card: #1a2332; --text: #e6edf3; --muted: #8b949e; --accent: #58a6ff; --danger: #f85149; --success: #3fb950; }
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--text); margin: 0; padding: 1.5rem; line-height: 1.5; }
+    h1 { font-size: 1.25rem; margin: 0 0 1rem; }
+    h2 { font-size: 1rem; margin: 1.5rem 0 0.5rem; color: var(--muted); }
+    section { background: var(--card); border-radius: 8px; padding: 1rem; margin-bottom: 1rem; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { text-align: left; padding: 0.5rem 0.75rem; border-bottom: 1px solid rgba(255,255,255,.06); }
+    th { color: var(--muted); font-weight: 600; }
+    .actions { display: flex; gap: 0.5rem; }
+    button, input[type="text"], input[type="email"] { font: inherit; padding: 0.4rem 0.6rem; border-radius: 6px; border: 1px solid rgba(255,255,255,.12); background: rgba(255,255,255,.06); color: var(--text); }
+    button { cursor: pointer; }
+    button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+    button.danger { background: transparent; color: var(--danger); border-color: var(--danger); }
+    button.small { padding: 0.2rem 0.5rem; font-size: 0.875rem; }
+    input { min-width: 160px; }
+    .add-form { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; margin-bottom: 0.75rem; }
+    .msg { margin-top: 0.5rem; font-size: 0.875rem; }
+    .msg.error { color: var(--danger); }
+    .msg.success { color: var(--success); }
+    .num { font-variant-numeric: tabular-nums; }
+  </style>
+</head>
+<body>
+  <h1>Product Pulse</h1>
+  <p style="color: var(--muted); margin: 0 0 1rem;">Manage recipients and view weekly email delivery status. Pipeline runs automatically; no manual trigger.</p>
+
+  <section>
+    <h2>Recipients</h2>
+    <div class="add-form">
+      <input type="email" id="newEmail" placeholder="Email" required>
+      <input type="text" id="newName" placeholder="Display name (optional)">
+      <button type="button" class="primary" id="addBtn">Add</button>
+    </div>
+    <div id="recipientMsg" class="msg" aria-live="polite"></div>
+    <table>
+      <thead>
+        <tr><th>Email</th><th>Display name</th><th></th></tr>
+      </thead>
+      <tbody id="recipientList"></tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Weekly email delivery</h2>
+    <p style="color: var(--muted); margin: 0 0 0.5rem;">Per report: how many emails were sent, failed, or pending (not yet sent).</p>
+    <table>
+      <thead>
+        <tr><th>Report / week</th><th>Generated</th><th class="num">Sent</th><th class="num">Failed</th><th class="num">Pending</th></tr>
+      </thead>
+      <tbody id="deliveryList"></tbody>
+    </table>
+    <div id="deliveryMsg" class="msg" aria-live="polite"></div>
+  </section>
+
+  <script>
+    function api(path, opts = {}) {
+      const base = window.location.pathname.startsWith('/dashboard') ? '/api' : (window.location.origin + '/api');
+      return fetch(base + path, { headers: { 'Content-Type': 'application/json' }, ...opts });
+    }
+
+    function showMsg(el, text, isError) {
+      el.textContent = text;
+      el.className = 'msg ' + (isError ? 'error' : 'success');
+      if (text) setTimeout(() => { el.textContent = ''; el.className = 'msg'; }, 4000);
+    }
+
+    // Recipients: list only active for display
+    async function loadRecipients() {
+      const res = await api('/recipients');
+      if (!res.ok) return;
+      const list = await res.json();
+      const active = list.filter(r => r.active === 1);
+      const tbody = document.getElementById('recipientList');
+      tbody.innerHTML = active.length === 0
+        ? '<tr><td colspan="3" style="color: var(--muted);">No active recipients. Add one above.</td></tr>'
+        : active.map(r => `
+          <tr data-id="${r.id}">
+            <td>${escapeHtml(r.email)}</td>
+            <td>${escapeHtml(r.display_name || '')}</td>
+            <td><div class="actions"><button class="small editRecipient" data-id="${r.id}" data-email="${escapeAttr(r.email)}" data-name="${escapeAttr(r.display_name || '')}">Edit</button><button class="small danger deleteRecipient" data-id="${r.id}" data-email="${escapeAttr(r.email)}">Delete</button></div></td>
+          </tr>`).join('');
+      tbody.querySelectorAll('.editRecipient').forEach(btn => btn.addEventListener('click', () => editRecipient(btn.dataset)));
+      tbody.querySelectorAll('.deleteRecipient').forEach(btn => btn.addEventListener('click', () => deleteRecipient(btn.dataset)));
+    }
+
+    function escapeHtml(s) {
+      const div = document.createElement('div');
+      div.textContent = s;
+      return div.innerHTML;
+    }
+    function escapeAttr(s) {
+      return escapeHtml(s).replace(/"/g, '&quot;');
+    }
+
+    document.getElementById('addBtn').addEventListener('click', async () => {
+      const email = document.getElementById('newEmail').value.trim();
+      const display_name = document.getElementById('newName').value.trim() || null;
+      const msgEl = document.getElementById('recipientMsg');
+      if (!email) { showMsg(msgEl, 'Email is required.', true); return; }
+      const res = await api('/recipients', { method: 'POST', body: JSON.stringify({ email, display_name }) });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { showMsg(msgEl, data.error || 'Failed to add recipient', true); return; }
+      document.getElementById('newEmail').value = '';
+      document.getElementById('newName').value = '';
+      showMsg(msgEl, 'Recipient added.');
+      loadRecipients();
+    });
+
+    function editRecipient({ id, email, name }) {
+      const newEmail = prompt('Email', email);
+      if (newEmail === null) return;
+      const newName = prompt('Display name', name || '');
+      if (newName === null) return;
+      const msgEl = document.getElementById('recipientMsg');
+      api('/recipients/' + id, { method: 'PATCH', body: JSON.stringify({ email: newEmail.trim(), display_name: newName.trim() || null }) })
+        .then(async (res) => {
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) { showMsg(msgEl, data.error || 'Update failed', true); return; }
+          showMsg(msgEl, 'Recipient updated.');
+          loadRecipients();
+        });
+    }
+
+    function deleteRecipient({ id, email }) {
+      if (!confirm('Remove recipient “‘ + email + ’”? They will no longer receive emails.')) return;
+      const msgEl = document.getElementById('recipientMsg');
+      api('/recipients/' + id, { method: 'DELETE' })
+        .then((res) => {
+          if (!res.ok) { showMsg(msgEl, 'Delete failed', true); return; }
+          showMsg(msgEl, 'Recipient removed.');
+          loadRecipients();
+        });
+    }
+
+    async function loadDelivery() {
+      const res = await api('/reports');
+      const msgEl = document.getElementById('deliveryMsg');
+      if (!res.ok) { msgEl.textContent = 'Could not load reports.'; msgEl.className = 'msg error'; return; }
+      const reports = await res.json();
+      const tbody = document.getElementById('deliveryList');
+      msgEl.textContent = '';
+      if (!reports.length) {
+        tbody.innerHTML = '<tr><td colspan="5" style="color: var(--muted);">No reports yet.</td></tr>';
+        return;
+      }
+      tbody.innerHTML = reports.map(r => {
+        const d = r.delivery_summary || { sent: 0, failed: 0, not_sent: 0 };
+        const gen = r.generated_at ? new Date(r.generated_at).toLocaleDateString() : '–';
+        const label = r.report_id || r.week_start_date || gen;
+        return `<tr><td>${escapeHtml(String(label))}</td><td>${escapeHtml(gen)}</td><td class="num">${d.sent}</td><td class="num">${d.failed}</td><td class="num">${d.not_sent}</td></tr>`;
+      }).join('');
+    }
+
+    loadRecipients();
+    loadDelivery();
+  </script>
+</body>
+</html>

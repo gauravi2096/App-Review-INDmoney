@@ -1,0 +1,25 @@
+{
+  "name": "product-pulse-phase-6-orchestrator",
+  "version": "1.0.0",
+  "description": "Phase 6: UI & scheduling backend for Product Pulse (reports, recipients, delivery status, pipeline trigger)",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "dev": "node server.js",
+    "start": "node server.js"
+  },
+  "keywords": [
+    "product-pulse",
+    "orchestrator",
+    "ui-backend",
+    "scheduler"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "better-sqlite3": "^11.6.0",
+    "dotenv": "^17.3.1",
+    "express": "^5.1.0",
+    "node-cron": "^4.0.5"
+  }
+}
+
