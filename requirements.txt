@@ -1,0 +1,6 @@
+# Product Pulse – Streamlit app and Python pipeline (P1–P5)
+streamlit>=1.28.0
+requests>=2.31.0
+python-dotenv>=1.0.0
+google-play-scraper>=1.2.0
+google-generativeai>=0.8.0

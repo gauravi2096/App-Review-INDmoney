@@ -1,0 +1,17 @@
+# Streamlit config for Product Pulse dashboard
+# https://docs.streamlit.io/library/advanced-features/configuration
+
+[theme]
+primaryColor = "#58a6ff"
+backgroundColor = "#0f1419"
+secondaryBackgroundColor = "#1a2332"
+textColor = "#e6edf3"
+font = "sans serif"
+
+[server]
+headless = true
+enableCORS = false
+enableXsrfProtection = true
+
+[browser]
+gatherUsageStats = false

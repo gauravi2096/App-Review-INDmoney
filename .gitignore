@@ -6,9 +6,10 @@
 # Dependencies
 node_modules/
 
-# SQLite DB (optional: remove if you want to track a seed DB)
+# SQLite DB and pipeline data (Streamlit + Node)
 *.db
 phase-1-ingest/data/*.db
+data/
 
 # Logs and OS
 *.log
