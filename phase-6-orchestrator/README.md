@@ -69,7 +69,7 @@ A workflow runs **every Monday at 10:00 AM IST** and triggers the pipeline by ca
    P6_DISABLE_CRON=true
    ```
 
-Workflow file: `.github/workflows/weekly-pipeline.yml`. You can also run it manually from the Actions tab.
+Workflow file: `.github/workflows/weekly-product-pulse.yml`. You can also run it manually from the Actions tab.
 
 ### Option B: In-process cron (node-cron)
 

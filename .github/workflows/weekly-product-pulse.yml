@@ -1,0 +1,36 @@
+# Product Pulse: run the pipeline every Monday at 10:00 AM IST.
+# Uses repository secrets: PIPELINE_TRIGGER_URL (required), PIPELINE_TRIGGER_SECRET (optional).
+# Add them under Settings → Secrets and variables → Actions.
+
+name: Weekly Product Pulse
+
+on:
+  schedule:
+    # 10:00 AM IST = 04:30 UTC (IST = UTC+5:30)
+    - cron: '30 4 * * 1'
+  workflow_dispatch:
+
+jobs:
+  run-pipeline:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger pipeline
+        env:
+          PIPELINE_URL: ${{ secrets.PIPELINE_TRIGGER_URL }}
+          PIPELINE_SECRET: ${{ secrets.PIPELINE_TRIGGER_SECRET }}
+        run: |
+          if [ -z "$PIPELINE_URL" ]; then
+            echo "PIPELINE_TRIGGER_URL secret is not set. Add it in Settings → Secrets and variables → Actions."
+            exit 0
+          fi
+          HTTP_CODE=$(curl -s -w "%{http_code}" -o /tmp/body -X POST \
+            ${PIPELINE_SECRET:+-H "Authorization: Bearer $PIPELINE_SECRET"} \
+            "$PIPELINE_URL")
+          echo "Response HTTP $HTTP_CODE"
+          cat /tmp/body
+          if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ]; then
+            echo "Pipeline triggered successfully."
+          else
+            echo "Pipeline trigger returned $HTTP_CODE. Check Phase 6 server and PIPELINE_TRIGGER_URL."
+            exit 1
+          fi
