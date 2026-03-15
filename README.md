@@ -21,6 +21,12 @@ Weekly one-pager from Google Play reviews, sent by email to a configurable list.
 
 Deploy this repo on [Streamlit Community Cloud](https://share.streamlit.io); main file `streamlit_app.py`. Set secrets: `GROQ_API_KEY`, `GEMINI_API_KEY`, and SMTP (`P5_*`) so the built-in pipeline can run. See [STREAMLIT_DEPLOY.md](STREAMLIT_DEPLOY.md).
 
-## Weekly run (Node + GitHub Actions)
+## Automatic weekly email (Monday 10:00 AM IST)
 
-A GitHub Actions workflow runs every **Monday 10:00 AM IST** and triggers the pipeline. Set the secret `PIPELINE_TRIGGER_URL` to your deployed Phase 6 `/api/pipeline/run` URL (when using the Node stack).
+The one-pager is sent automatically every **Monday at 10:00 AM IST** to recipients you manage in the Streamlit UI. To enable this:
+
+1. **Deploy Phase 6** (Node) so it has a public URL (e.g. Railway, Render).
+2. **Use Streamlit as the UI** and connect it to Phase 6: deploy the Streamlit app, set secret `P6_API_URL` to your Phase 6 URL, and in the app sidebar check **Use external Phase 6 API**. Add and edit recipients in Streamlit; they are stored in Phase 6’s DB.
+3. **Set the GitHub Actions secret**: in the repo go to **Settings → Secrets and variables → Actions** and add `PIPELINE_TRIGGER_URL` = `https://your-phase6-host/api/pipeline/run` (your real Phase 6 base URL + `/api/pipeline/run`).
+
+The workflow (`.github/workflows/weekly-pipeline.yml`) runs on schedule and calls that URL; Phase 6 runs the full pipeline and sends the one-pager to all active recipients.

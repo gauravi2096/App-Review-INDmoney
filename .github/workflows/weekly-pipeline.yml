@@ -1,9 +1,14 @@
 # Run the Product Pulse pipeline every Monday at 10:00 AM IST.
-# The pipeline (P1→P5) runs on the Phase 6 server that has the DB and recipient list;
-# this workflow only triggers that endpoint so the one-pager email is sent to UI-managed recipients.
+# Triggers the pipeline so the one-pager email is sent automatically to recipients
+# managed in the Streamlit UI (when Streamlit is connected to the same Phase 6 API).
 #
-# Required secret: PIPELINE_TRIGGER_URL = full URL to POST (e.g. https://your-phase6-host/api/pipeline/run)
-# Optional secret: PIPELINE_TRIGGER_SECRET = bearer token; set in Phase 6 if you want to validate it.
+# Setup:
+# 1. Deploy Phase 6 (Node) so it is reachable at a public URL.
+# 2. In Streamlit, use "Use external Phase 6 API" and set P6_API_URL to that URL.
+#    Recipients you add in Streamlit are then stored in Phase 6's DB.
+# 3. In this repo: Settings → Secrets → Actions, add:
+#    PIPELINE_TRIGGER_URL = https://your-phase6-host/api/pipeline/run
+#    (Optional) PIPELINE_TRIGGER_SECRET = bearer token if you protect the endpoint.
 
 name: Weekly Product Pulse Pipeline
 

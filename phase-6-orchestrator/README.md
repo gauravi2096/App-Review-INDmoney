@@ -54,7 +54,9 @@ By default the API listens on `http://localhost:4006`. Configure via `P6_PORT` i
 
 You can run the pipeline on a schedule in two ways.
 
-### Option A: GitHub Actions (recommended for Monday 10:00 AM IST)
+### Option A: GitHub Actions (Monday 10:00 AM IST; works with Streamlit UI)
+
+The repo workflow runs every **Monday at 10:00 AM IST** and triggers this server so the one-pager is sent to **recipients managed in the Streamlit UI** (when Streamlit is connected to this API via “Use external Phase 6 API”).
 
 A workflow runs **every Monday at 10:00 AM IST** and triggers the pipeline by calling your Phase 6 server:
 

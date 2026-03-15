@@ -24,16 +24,20 @@ The Streamlit app runs **all phases (P1–P6)** in one deployment: it uses a bui
 
 7. Click **Deploy**. Use the sidebar **Run weekly pipeline (P1→P5)** to trigger the full pipeline. Recipients and reports use the app’s local SQLite (ephemeral on Streamlit Cloud unless you add persistent storage).
 
-## Option B: Streamlit as UI only (connect to Phase 6 API)
+## Option B: Streamlit as UI + automatic Monday 10 AM IST email (Phase 6 API)
 
-If you prefer to run the pipeline on a Node server (e.g. Phase 6 on Railway) and only use Streamlit as the dashboard:
+Use Streamlit to manage recipients and have the one-pager **sent automatically every Monday at 10:00 AM IST** to those recipients via GitHub Actions:
 
-1. Deploy Phase 6 somewhere and get its public URL.
-2. Deploy the Streamlit app as above; in **Secrets** set only:
+1. **Deploy Phase 6** (Node) so it has a public URL (e.g. Railway, Render). Ensure it has the same DB and env (API keys, SMTP) so it can run the pipeline.
+2. **Deploy the Streamlit app**; in **Secrets** set:
    ```toml
    P6_API_URL = "https://your-phase6-url.up.railway.app"
    ```
-3. In the Streamlit sidebar, check **Use external Phase 6 API**. The app will then use the API for recipients, reports, and delivery (no built-in pipeline run).
+3. In the Streamlit sidebar, check **Use external Phase 6 API**. Add and edit recipients in Streamlit; they are stored in Phase 6’s DB.
+4. **Enable the weekly run**: in the **GitHub repo** go to **Settings → Secrets and variables → Actions** and add:
+   - `PIPELINE_TRIGGER_URL` = `https://your-phase6-url.up.railway.app/api/pipeline/run`
+
+The workflow runs every Monday 10:00 AM IST and triggers Phase 6; Phase 6 runs the pipeline and sends the one-pager to all active recipients (the same list you manage in Streamlit).
 
 ## Run locally
 
