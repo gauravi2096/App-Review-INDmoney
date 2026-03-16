@@ -228,11 +228,21 @@ def _init_schema_pg(conn: "PgConnection") -> None:
     """)
 
 
+def _pg_connection_url() -> str:
+    """Return DATABASE_URL with sslmode=require if needed (Supabase and most cloud Postgres require SSL)."""
+    url = config.DATABASE_URL
+    if "sslmode=" in url:
+        return url
+    sep = "&" if "?" in url else "?"
+    return f"{url}{sep}sslmode=require"
+
+
 def get_connection(db_path: Optional[str] = None):
     """Return a connection: PostgreSQL if DATABASE_URL is set, else SQLite at db_path or config.DB_PATH."""
     if config.DATABASE_URL:
         import psycopg2
-        raw = psycopg2.connect(config.DATABASE_URL)
+        url = _pg_connection_url()
+        raw = psycopg2.connect(url, connect_timeout=15)
         # Use a cursor that returns rows we can adapt to our PgRow for index access
         conn = PgConnection(raw)
         _init_schema_pg(conn)
