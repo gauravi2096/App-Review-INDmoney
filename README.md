@@ -7,7 +7,7 @@ Weekly one-pager from Google Play reviews, sent by email to a configurable list.
 
 ## Quick start (Streamlit, recommended)
 
-1. Create `.env` at repo root (or set env) with `GROQ_API_KEY`, `GEMINI_API_KEY`, and SMTP vars (`P5_FROM_ADDRESS`, `P5_SMTP_*`).
+1. Create `.env` at repo root (or set env) with `GROQ_API_KEY`, `GEMINI_API_KEY`, and SMTP vars (`P5_FROM_ADDRESS`, `P5_SMTP_*`). Optional: `DATABASE_URL` for a shared Postgres DB (see above).
 2. `pip install -r requirements.txt && streamlit run streamlit_app.py`.
 3. Open http://localhost:8501/. Add recipients, then click **Run weekly pipeline (P1→P5)** in the sidebar.
 
@@ -19,14 +19,24 @@ Weekly one-pager from Google Play reviews, sent by email to a configurable list.
 
 ## Deploy on Streamlit
 
-Deploy this repo on [Streamlit Community Cloud](https://share.streamlit.io); main file `streamlit_app.py`. Set secrets: `GROQ_API_KEY`, `GEMINI_API_KEY`, and SMTP (`P5_*`) so the built-in pipeline can run. See [STREAMLIT_DEPLOY.md](STREAMLIT_DEPLOY.md).
+Deploy this repo on [Streamlit Community Cloud](https://share.streamlit.io); main file `streamlit_app.py`. Set secrets: `DATABASE_URL` (see below), `GROQ_API_KEY`, `GEMINI_API_KEY`, and SMTP (`P5_*`) so the built-in pipeline can run. See [STREAMLIT_DEPLOY.md](STREAMLIT_DEPLOY.md).
+
+## Shared hosted database (recommended for pipeline + UI)
+
+To have **recipients you add in the Streamlit UI** used by the **scheduled Monday pipeline**, use a single hosted Postgres database for both:
+
+1. Create a Postgres database (e.g. [Supabase](https://supabase.com), [Neon](https://neon.tech), [Railway](https://railway.app)).
+2. Set **`DATABASE_URL`** to that database’s connection string (e.g. `postgresql://user:pass@host:5432/dbname`) in:
+   - **Streamlit Cloud**: App settings → Secrets.
+   - **GitHub Actions**: Repo Settings → Secrets and variables → Actions → `DATABASE_URL`.
+
+The pipeline and Streamlit app both connect to this DB when `DATABASE_URL` is set. No SQLite files or artifacts; report HTML is stored in the DB when using a hosted DB so the Monday run can send email without file storage.
 
 ## Automatic weekly email (Monday 10:00 AM IST)
 
-The one-pager is sent automatically every **Monday at 10:00 AM IST** to recipients you manage in the Streamlit UI. To enable this:
+The workflow **`.github/workflows/weekly-product-pulse.yml`** runs the **Python pipeline on the GitHub Actions runner** every Monday at 10:00 AM IST. It **requires** a shared DB so it uses the same recipients as the Streamlit UI.
 
-1. **Deploy Phase 6** (Node) so it has a public URL (e.g. Railway, Render).
-2. **Use Streamlit as the UI** and connect it to Phase 6: deploy the Streamlit app, set secret `P6_API_URL` to your Phase 6 URL, and in the app sidebar check **Use external Phase 6 API**. Add and edit recipients in Streamlit; they are stored in Phase 6’s DB.
-3. **Set the GitHub Actions secret**: in the repo go to **Settings → Secrets and variables → Actions** and add `PIPELINE_TRIGGER_URL` = `https://your-phase6-host/api/pipeline/run` (your real Phase 6 base URL + `/api/pipeline/run`).
+**Secrets** (Settings → Secrets and variables → Actions):
 
-The workflow (`.github/workflows/weekly-product-pulse.yml`) runs on schedule and calls that URL; Phase 6 runs the full pipeline and sends the one-pager to all active recipients.
+- **Required:** `DATABASE_URL` (Postgres connection string), `GROQ_API_KEY`, `GEMINI_API_KEY`, and SMTP: `P5_FROM_ADDRESS`, `P5_SMTP_HOST`, `P5_SMTP_PORT`, `P5_SMTP_SECURE`, `P5_SMTP_USER`, `P5_SMTP_PASS`
+- **Optional:** `RECIPIENT_EMAILS` = comma-separated emails to seed (in addition to recipients you add in the UI).

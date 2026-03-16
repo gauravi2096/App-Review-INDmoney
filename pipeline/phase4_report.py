@@ -160,7 +160,9 @@ def run(db_path: str | None = None, run_id_arg: str | None = None) -> dict:
         storage_path.write_text(html, encoding="utf-8")
         week_start = (analyzed_at or "")[:10] if analyzed_at else __import__("datetime").datetime.utcnow().strftime("%Y-%m-%d")
         artifact_path = f"reports/{report_filename}"
-        pipeline_db.insert_report_metadata(conn, run_id, run_id, week_start, word_count, artifact_path)
+        # When using shared hosted DB, store HTML in DB so the runner (e.g. Actions) can send email without file access.
+        body_html = html if config.DATABASE_URL else None
+        pipeline_db.insert_report_metadata(conn, run_id, run_id, week_start, word_count, artifact_path, body_html=body_html)
         return {"report_id": run_id, "path": str(storage_path)}
     finally:
         conn.close()

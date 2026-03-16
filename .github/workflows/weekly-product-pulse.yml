@@ -1,6 +1,7 @@
-# Product Pulse: run the pipeline every Monday at 10:00 AM IST.
-# Uses repository secrets: PIPELINE_TRIGGER_URL (required), PIPELINE_TRIGGER_SECRET (optional).
-# Add them under Settings → Secrets and variables → Actions.
+# Product Pulse: run the Python pipeline every Monday at 10:00 AM IST.
+# Uses a shared hosted DB (Postgres): set DATABASE_URL in repo Secrets so recipients
+# added in the Streamlit UI are used by this run. Required secrets: DATABASE_URL,
+# GROQ_API_KEY, GEMINI_API_KEY, P5_* SMTP. Optional: RECIPIENT_EMAILS.
 
 name: Weekly Product Pulse
 
@@ -14,23 +15,56 @@ jobs:
   run-pipeline:
     runs-on: ubuntu-latest
     steps:
-      - name: Trigger pipeline
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Require shared database
         env:
-          PIPELINE_URL: ${{ secrets.PIPELINE_TRIGGER_URL }}
-          PIPELINE_SECRET: ${{ secrets.PIPELINE_TRIGGER_SECRET }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: |
-          if [ -z "$PIPELINE_URL" ]; then
-            echo "PIPELINE_TRIGGER_URL secret is not set. Add it in Settings → Secrets and variables → Actions."
-            exit 0
-          fi
-          HTTP_CODE=$(curl -s -w "%{http_code}" -o /tmp/body -X POST \
-            ${PIPELINE_SECRET:+-H "Authorization: Bearer $PIPELINE_SECRET"} \
-            "$PIPELINE_URL")
-          echo "Response HTTP $HTTP_CODE"
-          cat /tmp/body
-          if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ]; then
-            echo "Pipeline triggered successfully."
-          else
-            echo "Pipeline trigger returned $HTTP_CODE. Check Phase 6 server and PIPELINE_TRIGGER_URL."
+          if [ -z "$DATABASE_URL" ]; then
+            echo "::error::DATABASE_URL must be set in repo Secrets. Use a hosted Postgres (e.g. Supabase/Neon/Railway) so the pipeline and Streamlit UI share the same DB."
             exit 1
           fi
+
+      - name: Seed recipients (optional)
+        env:
+          RECIPIENT_EMAILS: ${{ secrets.RECIPIENT_EMAILS }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          python -c "
+          import os
+          from pipeline import db, config
+          if not config.DATABASE_URL:
+              print('DATABASE_URL not set; skipping seed (use shared DB for pipeline + Streamlit)')
+              exit(0)
+          emails = os.environ.get('RECIPIENT_EMAILS', '')
+          if emails:
+              conn = db.get_connection()
+              for email in [e.strip() for e in emails.split(',') if e.strip()]:
+                  try: db.add_recipient(conn, email, None)
+                  except Exception: pass
+              conn.close()
+              print('Seeded recipients from RECIPIENT_EMAILS')
+          "
+
+      - name: Run pipeline (P1→P5)
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          P5_FROM_ADDRESS: ${{ secrets.P5_FROM_ADDRESS }}
+          P5_SMTP_HOST: ${{ secrets.P5_SMTP_HOST }}
+          P5_SMTP_PORT: ${{ secrets.P5_SMTP_PORT }}
+          P5_SMTP_SECURE: ${{ secrets.P5_SMTP_SECURE }}
+          P5_SMTP_USER: ${{ secrets.P5_SMTP_USER }}
+          P5_SMTP_PASS: ${{ secrets.P5_SMTP_PASS }}
+        run: python -m pipeline.runner

@@ -213,7 +213,10 @@ def main():
 
     conn.close()
     st.sidebar.divider()
-    st.sidebar.caption("Product Pulse: all phases run in this app. Data stored in local SQLite.")
+    if pipeline_config.DATABASE_URL:
+        st.sidebar.caption("Using shared hosted DB (DATABASE_URL). Recipients and reports are shared with the scheduled pipeline.")
+    else:
+        st.sidebar.caption("Product Pulse: all phases run in this app. Data in local SQLite. Set DATABASE_URL to use a shared hosted DB.")
 
 
 if __name__ == "__main__":

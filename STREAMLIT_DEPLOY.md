@@ -1,17 +1,18 @@
 # Deploy Product Pulse on Streamlit Cloud
 
-The Streamlit app runs **all phases (P1–P6)** in one deployment: it uses a built-in Python pipeline (ingest, clean, analyze, report, email), manages recipients, and shows reports and delivery status. No separate Node server is required.
+The Streamlit app runs **all phases (P1–P5)** in one deployment: built-in Python pipeline (ingest, clean, analyze, report, email), recipient management, and reports/delivery view. No separate Node server is required.
 
-## Option A: Full pipeline in Streamlit (recommended)
+## Option A: Full pipeline + shared DB (recommended for Monday email)
 
-1. Go to [share.streamlit.io](https://share.streamlit.io) and sign in with GitHub.
-2. Click **New app**.
-3. **Repository**: `gauravi2096/App-Review-INDmoney` (or your fork).
-4. **Branch**: `main`.
-5. **Main file path**: `streamlit_app.py`.
-6. **Advanced settings** → **Secrets**: add your API keys and SMTP (so the pipeline can run in the cloud):
+Use a **shared hosted Postgres** so recipients you add in the Streamlit UI are used when the **Monday 10:00 AM IST** GitHub Actions pipeline runs.
+
+1. Create a Postgres database (e.g. [Supabase](https://supabase.com), [Neon](https://neon.tech), [Railway](https://railway.app)) and copy its connection string.
+2. Go to [share.streamlit.io](https://share.streamlit.io) and sign in with GitHub.
+3. **New app** → **Repository**: your repo (or fork), **Branch**: `main`, **Main file path**: `streamlit_app.py`.
+4. **Advanced settings** → **Secrets**:
 
    ```toml
+   DATABASE_URL = "postgresql://user:pass@host:5432/dbname"
    GROQ_API_KEY = "your-groq-api-key"
    GEMINI_API_KEY = "your-gemini-api-key"
    P5_FROM_ADDRESS = "your-email@gmail.com"
@@ -22,38 +23,35 @@ The Streamlit app runs **all phases (P1–P6)** in one deployment: it uses a bui
    P5_SMTP_PASS = "your-app-password"
    ```
 
-7. Click **Deploy**. Use the sidebar **Run weekly pipeline (P1→P5)** to trigger the full pipeline. Recipients and reports use the app’s local SQLite (ephemeral on Streamlit Cloud unless you add persistent storage).
+5. In the **GitHub repo**: **Settings → Secrets and variables → Actions** → add the same **`DATABASE_URL`** (and `GROQ_API_KEY`, `GEMINI_API_KEY`, `P5_*` SMTP). The Monday workflow runs the pipeline on the runner and uses this DB; recipients added in Streamlit are used automatically.
+6. Click **Deploy**. Add recipients in the app; run **Run weekly pipeline (P1→P5)** manually or wait for the Monday run.
 
-## Option B: Streamlit as UI + automatic Monday 10 AM IST email (Phase 6 API)
+## Option B: Streamlit only (local SQLite)
 
-Use Streamlit to manage recipients and have the one-pager **sent automatically every Monday at 10:00 AM IST** to those recipients via GitHub Actions:
+If you do not need the scheduled Monday run to share recipients with Streamlit:
 
-1. **Deploy Phase 6** (Node) so it has a public URL (e.g. Railway, Render). Ensure it has the same DB and env (API keys, SMTP) so it can run the pipeline.
-2. **Deploy the Streamlit app**; in **Secrets** set:
-   ```toml
-   P6_API_URL = "https://your-phase6-url.up.railway.app"
-   ```
-3. In the Streamlit sidebar, check **Use external Phase 6 API**. Add and edit recipients in Streamlit; they are stored in Phase 6’s DB.
-4. **Enable the weekly run**: in the **GitHub repo** go to **Settings → Secrets and variables → Actions** and add:
-   - `PIPELINE_TRIGGER_URL` = `https://your-phase6-url.up.railway.app/api/pipeline/run`
+1. Deploy the Streamlit app as above but **omit** `DATABASE_URL` from Secrets.
+2. Recipients and reports use the app’s **ephemeral** SQLite (data is lost when the app restarts). Use **Run weekly pipeline** in the sidebar to run the pipeline on demand.
 
-The workflow runs every Monday 10:00 AM IST and triggers Phase 6; Phase 6 runs the pipeline and sends the one-pager to all active recipients (the same list you manage in Streamlit).
+## Option C: Streamlit as UI + Phase 6 API
+
+Use Streamlit as the UI and a **deployed Phase 6** (Node) as the backend: set **Secrets** → `P6_API_URL` to your Phase 6 URL, then check **Use external Phase 6 API** in the sidebar. Recipients and pipeline run on the Phase 6 server. The Monday workflow in this repo runs the **Python pipeline on the runner** with `DATABASE_URL`; it does not call Phase 6. To have Monday email via Phase 6, run the pipeline on your Phase 6 host (e.g. cron) instead of using the repo workflow.
 
 ## Run locally
 
 ```bash
-# From repo root
 pip install -r requirements.txt
-# Set env vars (or use .env): GROQ_API_KEY, GEMINI_API_KEY, P5_* for SMTP
+# Set env (or .env): GROQ_API_KEY, GEMINI_API_KEY, P5_* for SMTP; optional DATABASE_URL for shared DB
 streamlit run streamlit_app.py
 ```
 
-- By default the app uses the **built-in pipeline** and local SQLite (`data/product_pulse.db`). Click **Run weekly pipeline (P1→P5)** in the sidebar to run ingest → clean → analyze → report → email.
-- To use the Node Phase 6 API instead, check **Use external Phase 6 API** in the sidebar and set the API URL.
+- **Without `DATABASE_URL`**: built-in pipeline and local SQLite (`data/product_pulse.db`).
+- **With `DATABASE_URL`**: same app and pipeline but data is in the shared Postgres (same as Streamlit Cloud and the Monday run if you set the secret there).
 
 ## Summary
 
 | Mode        | What runs |
 |-------------|-----------|
-| **Built-in (default)** | All phases (P1–P5) run inside the Streamlit app. Recipients and reports are stored in local SQLite. Trigger with **Run weekly pipeline** in the sidebar. |
-| **External API** | Streamlit is UI only; it talks to your deployed Phase 6 API. Pipeline runs on the Node server (e.g. via GitHub Actions or cron). |
+| **Built-in + DATABASE_URL** | Pipeline and UI use shared Postgres. Recipients added in Streamlit are used by the Monday GitHub Actions run. |
+| **Built-in (no DATABASE_URL)** | Pipeline and UI use local SQLite. Monday run requires DATABASE_URL in Actions and uses its own DB/recipients. |
+| **External Phase 6 API** | Streamlit is UI only; data and pipeline run on your Phase 6 server. |

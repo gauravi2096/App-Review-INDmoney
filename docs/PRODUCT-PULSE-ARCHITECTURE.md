@@ -44,15 +44,14 @@ The Product Pulse system depends on the following external services, libraries, 
 
 The system uses a single logical storage layer with two parts:
 
-- **Database (relational or document):** Persistent store for:
-  - **Raw reviews (post-ingest):** One row/document per review with rating, title, text, date, run_id (or fetch_run_id), ingested_at. Filled by P1 from google-play-scraper output. Retained for audit and re-runs. Optional retention policy (e.g. keep last N runs).
-  - **Cleaned reviews:** Same schema but normalized and anonymized; linked to an ingestion run or week. Used as input for LLM and for debugging.
-  - **Recipient list:** Email address, display name, active flag, created_at, updated_at. Used by the email service and editable via UI.
-  - **Report metadata:** One record per weekly report: report_id, week_start_date, report_status (draft / generated / failed), word_count, generated_at, storage_artifact_path (or URL). Used by UI to list and open reports and by P5 to send.
-  - **Delivery status:** One record per (report_id, recipient_email): status (Sent / Not Sent / Error), sent_at, error_message (if Error). Used by UI to show per-recipient delivery status.
+- **Database (relational):** Persistent store (SQLite for local runs, or **PostgreSQL** when `DATABASE_URL` is set for a shared hosted DB used by Streamlit and the scheduled pipeline):
+  - **Raw reviews (post-ingest):** One row per review with rating, title, text, date, run_id, ingested_at. Filled by P1. Retained for audit and re-runs.
+  - **Cleaned reviews:** Same schema but normalized and anonymized; linked to run_id. Used as input for LLM and for debugging.
+  - **Recipient list:** Email, display_name, active, created_at, updated_at. Used by the email service and editable via UI.
+  - **Report metadata:** One record per weekly report: report_id, week_start_date, report_status, word_count, generated_at, storage_artifact_path, and optionally **body_html** (when using a hosted DB, the report HTML is stored here so P5 can send without file storage).
+  - **Delivery status:** Per (report_id, recipient_email): status, sent_at, error_message. Used by UI for delivery summary.
 
-- **Object/Blob storage (or file system):** For large or binary artifacts:
-  - **Generated report artifact:** The final one-pager (e.g. HTML or markdown) for each week. Stored by report_id or week identifier. Report metadata in the database holds the path or URL so P5 and UI can read the body for email and for "view one-pager."
+- **Object/Blob storage (or file system):** When not using a hosted DB, the report HTML is written to the file system (e.g. `data/reports/`). When `DATABASE_URL` is set, report HTML is stored in **report_metadata.body_html** so the Actions runner and Streamlit share the same data without shared file storage.
 
 **Data flow and storage:** P1 fetches reviews via google-play-scraper and writes raw reviews to the database. P2 reads raw reviews, writes cleaned reviews to the database. P3 reads cleaned reviews from the database, writes theme/quote/action results to the database (or a dedicated analysis table). P4 reads analysis from the database, writes the note to object storage and report metadata to the database. P5 reads report body from object storage and recipient list from the database, writes delivery status to the database. UI and scheduler read/write recipients, report metadata, and delivery status.
 
@@ -66,7 +65,7 @@ The system uses a single logical storage layer with two parts:
 ### 3.3 Scheduling Mechanism (Weekly Automatic Send)
 
 - **Role:** Run the full pipeline (P1 through P5) once per week without user action.
-- **Component:** A scheduler (e.g. cron job, cloud scheduler, or in-process scheduler) that runs at a fixed weekday and time (e.g. every Monday 09:00). The repo includes a **GitHub Actions workflow** (`.github/workflows/weekly-product-pulse.yml`) that runs every **Monday at 10:00 AM IST** and triggers the pipeline by calling the Phase 6 `POST /api/pipeline/run` endpoint on a deployed server; recipients managed in the dashboard receive the one-pager. Alternatively, Phase 6 can use in-process node-cron. In all cases the trigger invokes the same pipeline entry point; only the trigger differs (time-based vs user click).
+- **Component:** The repo includes a **GitHub Actions workflow** (`.github/workflows/weekly-product-pulse.yml`) that runs every **Monday at 10:00 AM IST**. The workflow runs the **Python pipeline on the runner** (no external URL). It requires **`DATABASE_URL`** (a shared hosted Postgres) so the same DB is used by Streamlit and the scheduled run; recipients added in the Streamlit UI are then used automatically when the Monday pipeline runs. Alternatively, Phase 6 can be deployed and use in-process node-cron; in that case the trigger invokes the same pipeline entry point; only the trigger differs (time-based vs user click).
 - **Execution:** On schedule, the scheduler calls the pipeline with parameters: e.g. "fetch reviews for INDmoney (last 8–12 weeks)," "generate report and send to all active recipients." The pipeline runs P1→P2→P3→P4→P5 in sequence. P1 fetches fresh reviews from the Play Store via google-play-scraper each run; if the fetch returns no reviews in the window, the design defines behaviour (e.g. skip run and record "No data," or reuse last run’s data per policy).
 - **Idempotency:** Each run produces one report per week (keyed by week or run_id). Delivery status is per (report, recipient). Re-runs can overwrite that week’s report and re-send, or be treated as "manual resend"; the architecture should state which.
 

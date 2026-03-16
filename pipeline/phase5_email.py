@@ -71,10 +71,12 @@ def run(db_path: str | None = None, report_id_arg: str | None = None) -> dict:
         meta = pipeline_db.get_report_metadata(conn, report_id_arg)
         if not meta:
             raise RuntimeError("No report metadata found. Run Phase 4 first.")
-        report_path = reports_dir / f"{meta['report_id']}.html"
-        if not report_path.exists():
-            raise RuntimeError(f"Report body not found at {report_path}")
-        html = report_path.read_text(encoding="utf-8")
+        html = meta.get("body_html")
+        if not html:
+            report_path = reports_dir / f"{meta['report_id']}.html"
+            if not report_path.exists():
+                raise RuntimeError(f"Report body not found at {report_path}")
+            html = report_path.read_text(encoding="utf-8")
         recipients = pipeline_db.get_active_recipients(conn)
         if not recipients:
             return {"sent": 0, "report_id": meta["report_id"]}

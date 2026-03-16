@@ -54,22 +54,9 @@ By default the API listens on `http://localhost:4006`. Configure via `P6_PORT` i
 
 You can run the pipeline on a schedule in two ways.
 
-### Option A: GitHub Actions (Monday 10:00 AM IST; works with Streamlit UI)
+### Option A: GitHub Actions (Monday 10:00 AM IST)
 
-The repo workflow runs every **Monday at 10:00 AM IST** and triggers this server so the one-pager is sent to **recipients managed in the Streamlit UI** (when Streamlit is connected to this API via “Use external Phase 6 API”).
-
-A workflow runs **every Monday at 10:00 AM IST** and triggers the pipeline by calling your Phase 6 server:
-
-1. Deploy Phase 6 (and its DB) so it is reachable at a URL (e.g. `https://your-host/api/pipeline/run`).
-2. In the repo: **Settings → Secrets and variables → Actions**, add:
-   - **PIPELINE_TRIGGER_URL** (required): full URL to trigger, e.g. `https://your-phase6-host/api/pipeline/run`
-   - **PIPELINE_TRIGGER_SECRET** (optional): bearer token if you add auth to the endpoint
-3. Disable the in-process cron on the Phase 6 server so it doesn’t run twice:
-   ```env
-   P6_DISABLE_CRON=true
-   ```
-
-Workflow file: `.github/workflows/weekly-product-pulse.yml`. You can also run it manually from the Actions tab.
+The workflow runs the **Python pipeline on the Actions runner** (no Phase 6 URL). Set repository secrets: GROQ_API_KEY, GEMINI_API_KEY, SMTP (P5_*), and optionally RECIPIENT_EMAILS. See the main README (Automatic weekly email). You can also run the workflow manually from the Actions tab.
 
 ### Option B: In-process cron (node-cron)
 

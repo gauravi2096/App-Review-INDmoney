@@ -30,3 +30,14 @@ def run_weekly_pipeline(db_path: str | None = None) -> dict:
     r5 = phase5_email.run(db_path, r4.get("report_id"))
     results["phase5"] = r5
     return results
+
+
+if __name__ == "__main__":
+    import sys
+    try:
+        out = run_weekly_pipeline()
+        print("Pipeline completed:", out)
+        sys.exit(0)
+    except Exception as e:
+        print("Pipeline failed:", e, file=sys.stderr)
+        sys.exit(1)
