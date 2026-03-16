@@ -25,8 +25,8 @@ Deploy this repo on [Streamlit Community Cloud](https://share.streamlit.io); mai
 
 To have **recipients you add in the Streamlit UI** used by the **scheduled Monday pipeline**, use a single hosted Postgres database for both:
 
-1. Create a Postgres database (e.g. [Supabase](https://supabase.com), [Neon](https://neon.tech), [Railway](https://railway.app)).
-2. Set **`DATABASE_URL`** to that database’s connection string (e.g. `postgresql://user:pass@host:5432/dbname`) in:
+1. Create a Postgres database (e.g. [Supabase](https://supabase.com), [Neon](https://neon.tech), [Railway](https://railway.app)). **Supabase:** use the **connection pooler** URI (port **6543**), not the direct one (5432): Project Settings → Database → Connection string → **Connection pooling** (Transaction mode).
+2. Set **`DATABASE_URL`** to that URI (e.g. `postgresql://user:pass@host:6543/postgres`) in:
    - **Streamlit Cloud**: App settings → Secrets.
    - **GitHub Actions**: Repo Settings → Secrets and variables → Actions → `DATABASE_URL`.
 

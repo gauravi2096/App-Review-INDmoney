@@ -231,6 +231,13 @@ def _init_schema_pg(conn: "PgConnection") -> None:
 def _pg_connection_url() -> str:
     """Return DATABASE_URL with sslmode=require if needed (Supabase and most cloud Postgres require SSL)."""
     url = config.DATABASE_URL
+    # Streamlit Cloud and PaaS cannot use Supabase direct (port 5432). Must use pooler (port 6543).
+    if "db." in url and "supabase.co" in url and ":6543" not in url:
+        raise RuntimeError(
+            "Use Supabase connection pooler (port 6543), not direct (5432). "
+            "In Supabase: Project Settings → Database → Connection string → URI → choose 'Connection pooling' (Transaction mode). "
+            "Use that URI (with your password) as DATABASE_URL."
+        )
     if "sslmode=" in url:
         return url
     sep = "&" if "?" in url else "?"

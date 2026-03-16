@@ -6,13 +6,13 @@ The Streamlit app runs **all phases (P1–P5)** in one deployment: built-in Pyth
 
 Use a **shared hosted Postgres** so recipients you add in the Streamlit UI are used when the **Monday 10:00 AM IST** GitHub Actions pipeline runs.
 
-1. Create a Postgres database (e.g. [Supabase](https://supabase.com), [Neon](https://neon.tech), [Railway](https://railway.app)) and copy its connection string.
+1. Create a Postgres database (e.g. [Supabase](https://supabase.com), [Neon](https://neon.tech), [Railway](https://railway.app)) and copy its connection string. **Supabase:** use the **pooler** URI (port **6543**), not direct (5432): Project Settings → Database → Connection string → **Connection pooling** (Transaction mode). Streamlit Cloud cannot use the direct connection.
 2. Go to [share.streamlit.io](https://share.streamlit.io) and sign in with GitHub.
 3. **New app** → **Repository**: your repo (or fork), **Branch**: `main`, **Main file path**: `streamlit_app.py`.
 4. **Advanced settings** → **Secrets**:
 
    ```toml
-   DATABASE_URL = "postgresql://user:pass@host:5432/dbname"
+   DATABASE_URL = "postgresql://user:pass@host:6543/postgres"
    GROQ_API_KEY = "your-groq-api-key"
    GEMINI_API_KEY = "your-gemini-api-key"
    P5_FROM_ADDRESS = "your-email@gmail.com"
