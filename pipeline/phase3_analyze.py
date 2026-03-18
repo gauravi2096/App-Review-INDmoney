@@ -172,34 +172,42 @@ def _split_batches(reviews: list[dict], max_tokens: int) -> list[list[dict]]:
 
 def run(db_path: str | None = None, run_id_arg: str | None = None) -> dict:
     db_path = db_path or config.DB_PATH
+    # Close DB before Groq calls: Supabase pooler drops idle connections (SSL EOF) if the
+    # connection sits open during long API work.
     conn = pipeline_db.get_connection(db_path)
     try:
         reviews = pipeline_db.get_cleaned_reviews(conn, run_id_arg)
         if not reviews:
             return {"run_id": None, "analyzed": False}
         run_id = reviews[0]["run_id"]
-        batches = _split_batches(reviews, config.BATCH_TOKEN_LIMIT)
-        batch_results = []
-        for i, batch in enumerate(batches):
-            if i > 0:
-                time.sleep(max(config.BATCH_DELAY_MS / 1000.0, 2.0))
-            prompt = _build_prompt(batch)
-            raw = _groq_complete(prompt)
-            parsed = _extract_json(raw)
-            if parsed:
-                batch_results.append(_normalize_analysis(parsed))
-        if not batch_results:
-            raise RuntimeError("No valid batch results")
-        if len(batch_results) == 1:
-            analysis = batch_results[0]
-        else:
-            syn_prompt = _build_synthesis_prompt(batch_results)
-            raw_syn = _groq_complete(syn_prompt)
-            parsed_syn = _extract_json(raw_syn)
-            if not parsed_syn:
-                raise RuntimeError("Synthesis parse failed")
-            analysis = _normalize_analysis(parsed_syn)
-        pipeline_db.upsert_analysis(conn, run_id, analysis)
-        return {"run_id": run_id, "analyzed": True, "analysis": analysis}
     finally:
         conn.close()
+
+    batches = _split_batches(reviews, config.BATCH_TOKEN_LIMIT)
+    batch_results = []
+    for i, batch in enumerate(batches):
+        if i > 0:
+            time.sleep(max(config.BATCH_DELAY_MS / 1000.0, 2.0))
+        prompt = _build_prompt(batch)
+        raw = _groq_complete(prompt)
+        parsed = _extract_json(raw)
+        if parsed:
+            batch_results.append(_normalize_analysis(parsed))
+    if not batch_results:
+        raise RuntimeError("No valid batch results")
+    if len(batch_results) == 1:
+        analysis = batch_results[0]
+    else:
+        syn_prompt = _build_synthesis_prompt(batch_results)
+        raw_syn = _groq_complete(syn_prompt)
+        parsed_syn = _extract_json(raw_syn)
+        if not parsed_syn:
+            raise RuntimeError("Synthesis parse failed")
+        analysis = _normalize_analysis(parsed_syn)
+
+    conn = pipeline_db.get_connection(db_path)
+    try:
+        pipeline_db.upsert_analysis(conn, run_id, analysis)
+    finally:
+        conn.close()
+    return {"run_id": run_id, "analyzed": True, "analysis": analysis}

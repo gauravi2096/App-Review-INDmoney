@@ -40,8 +40,11 @@ jobs:
 
       - name: Seed recipients (optional)
         env:
+          # For end-to-end testing we ensure at least this address is present.
+          # You can override/add others by setting the optional RECIPIENT_EMAILS secret.
           RECIPIENT_EMAILS: ${{ secrets.RECIPIENT_EMAILS }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          TEST_RECIPIENT_EMAIL: "gauravichavan20@gmail.com"
         run: |
           python -c "
           import os
@@ -49,19 +52,29 @@ jobs:
           if not config.DATABASE_URL:
               print('DATABASE_URL not set; skipping seed (use shared DB for pipeline + Streamlit)')
               exit(0)
-          emails = os.environ.get('RECIPIENT_EMAILS', '')
+          extra = os.environ.get('RECIPIENT_EMAILS', '') or ''
+          test = (os.environ.get('TEST_RECIPIENT_EMAIL') or '').strip()
+          emails = [e.strip() for e in (extra.split(',') if extra else []) if e.strip()]
+          if test:
+              emails.append(test)
           if emails:
               conn = db.get_connection()
-              for email in [e.strip() for e in emails.split(',') if e.strip()]:
-                  try: db.add_recipient(conn, email, None)
-                  except Exception: pass
+              for email in emails:
+                  try:
+                      db.add_recipient(conn, email, None)
+                  except Exception:
+                      pass
               conn.close()
-              print('Seeded recipients from RECIPIENT_EMAILS')
+              print('Seeded recipients:', ', '.join(sorted(set(emails))))
           "
 
       - name: Run pipeline (P1→P5)
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          # Reduce load for testing to avoid Groq burst 429s.
+          P1_DATE_WINDOW_WEEKS: "8"
+          P3_BATCH_TOKEN_LIMIT: "3000"
+          P3_BATCH_DELAY_MS: "30000"
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           P5_FROM_ADDRESS: ${{ secrets.P5_FROM_ADDRESS }}
@@ -71,3 +84,37 @@ jobs:
           P5_SMTP_USER: ${{ secrets.P5_SMTP_USER }}
           P5_SMTP_PASS: ${{ secrets.P5_SMTP_PASS }}
         run: python -m pipeline.runner
+
+      - name: Verify email sent to test recipient
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          TEST_RECIPIENT_EMAIL: "gauravichavan20@gmail.com"
+        run: |
+          python -c "
+          import os, sys
+          from pipeline import db
+          conn = db.get_connection()
+          test_email = (os.environ.get('TEST_RECIPIENT_EMAIL') or '').strip()
+          if not test_email:
+              print('TEST_RECIPIENT_EMAIL missing'); sys.exit(1)
+          row = conn.execute('SELECT report_id FROM report_metadata ORDER BY generated_at DESC LIMIT 1').fetchone()
+          if not row:
+              print('No report_metadata row found'); sys.exit(1)
+          report_id = row[0]
+          status_row = conn.execute(
+              'SELECT status, sent_at, error_message FROM delivery_status WHERE report_id = ? AND recipient_email = ?',
+              (report_id, test_email),
+          ).fetchone()
+          if not status_row:
+              print(f'No delivery_status row for report_id={report_id} recipient={test_email}')
+              sys.exit(1)
+          status = status_row[0]
+          sent_at = status_row[1]
+          err = status_row[2]
+          print('Latest report_id:', report_id)
+          print('Delivery status for', test_email, ':', status, 'sent_at=', sent_at)
+          if status != 'Sent':
+              print('Error message:', err)
+              sys.exit(1)
+          conn.close()
+          "

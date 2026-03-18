@@ -148,21 +148,26 @@ def run(db_path: str | None = None, run_id_arg: str | None = None) -> dict:
         if not (analysis.get("themes") or analysis.get("quotes") or analysis.get("actionIdeas")):
             raise RuntimeError("Analysis has no themes, quotes, or action ideas.")
         report_context = pipeline_db.get_review_stats_for_run(conn, run_id)
-        prompt = _build_report_prompt(analysis, config.MAX_WORDS, report_context)
-        body_text = _gemini_complete_text(prompt)
-        word_count = _count_words(body_text)
-        if word_count > config.MAX_WORDS:
-            body_text, _ = _truncate_words(body_text, config.MAX_WORDS)
-            word_count = _count_words(body_text)
-        html = _text_to_html(body_text)
-        report_filename = f"{run_id}.html"
-        storage_path = reports_dir / report_filename
-        storage_path.write_text(html, encoding="utf-8")
-        week_start = (analyzed_at or "")[:10] if analyzed_at else __import__("datetime").datetime.utcnow().strftime("%Y-%m-%d")
-        artifact_path = f"reports/{report_filename}"
-        # When using shared hosted DB, store HTML in DB so the runner (e.g. Actions) can send email without file access.
-        body_html = html if config.DATABASE_URL else None
-        pipeline_db.insert_report_metadata(conn, run_id, run_id, week_start, word_count, artifact_path, body_html=body_html)
-        return {"report_id": run_id, "path": str(storage_path)}
     finally:
         conn.close()
+
+    prompt = _build_report_prompt(analysis, config.MAX_WORDS, report_context)
+    body_text = _gemini_complete_text(prompt)
+    word_count = _count_words(body_text)
+    if word_count > config.MAX_WORDS:
+        body_text, _ = _truncate_words(body_text, config.MAX_WORDS)
+        word_count = _count_words(body_text)
+    html = _text_to_html(body_text)
+    report_filename = f"{run_id}.html"
+    storage_path = reports_dir / report_filename
+    storage_path.write_text(html, encoding="utf-8")
+    week_start = (analyzed_at or "")[:10] if analyzed_at else __import__("datetime").datetime.utcnow().strftime("%Y-%m-%d")
+    artifact_path = f"reports/{report_filename}"
+    body_html = html if config.DATABASE_URL else None
+
+    conn = pipeline_db.get_connection(db_path)
+    try:
+        pipeline_db.insert_report_metadata(conn, run_id, run_id, week_start, word_count, artifact_path, body_html=body_html)
+    finally:
+        conn.close()
+    return {"report_id": run_id, "path": str(storage_path)}

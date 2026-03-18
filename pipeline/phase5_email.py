@@ -78,21 +78,27 @@ def run(db_path: str | None = None, report_id_arg: str | None = None) -> dict:
                 raise RuntimeError(f"Report body not found at {report_path}")
             html = report_path.read_text(encoding="utf-8")
         recipients = pipeline_db.get_active_recipients(conn)
-        if not recipients:
-            return {"sent": 0, "report_id": meta["report_id"]}
-        subject = _subject(meta["week_start_date"])
-        sent = 0
-        for r in recipients:
-            success, err = _send_email(r["email"], subject, html)
-            status = "Sent" if success else "Error"
-            from datetime import datetime
-            sent_at = datetime.utcnow().isoformat() + "Z" if success else None
-            pipeline_db.upsert_delivery_status(
-                conn, meta["report_id"], r["email"], status,
-                sent_at=sent_at, error_message=err,
-            )
-            if success:
-                sent += 1
-        return {"report_id": meta["report_id"], "sent": sent, "total": len(recipients)}
     finally:
         conn.close()
+
+    if not recipients:
+        return {"sent": 0, "report_id": meta["report_id"]}
+    subject = _subject(meta["week_start_date"])
+    sent = 0
+    from datetime import datetime
+
+    for r in recipients:
+        success, err = _send_email(r["email"], subject, html)
+        status = "Sent" if success else "Error"
+        sent_at = datetime.utcnow().isoformat() + "Z" if success else None
+        conn2 = pipeline_db.get_connection(db_path)
+        try:
+            pipeline_db.upsert_delivery_status(
+                conn2, meta["report_id"], r["email"], status,
+                sent_at=sent_at, error_message=err,
+            )
+        finally:
+            conn2.close()
+        if success:
+            sent += 1
+    return {"report_id": meta["report_id"], "sent": sent, "total": len(recipients)}
