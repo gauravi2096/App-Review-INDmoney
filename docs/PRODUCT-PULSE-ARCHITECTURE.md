@@ -27,8 +27,8 @@ The Product Pulse system depends on the following external services, libraries, 
 |------------|------|---------|---------|
 | **Google Play Store** | External service | P1 | Public source of INDmoney app reviews. Read via google-play-scraper; no auth. Subject to Play Store availability and rate limits. |
 | **google-play-scraper** | Library / package | P1 | Fetches app reviews from the public Play Store (reviews API, pagination, throttling). Requires INDmoney app ID; optional lang/country. |
-| **Database** | Infrastructure | P1–P6 | Persists raw reviews, cleaned reviews, analysis, report metadata, delivery status, recipient list. Required for pipeline and UI. |
-| **Object (blob) storage** | Infrastructure | P4, P5, UI | Stores generated report artifact per week. P5 and UI read report body from here. |
+| **Database** | Infrastructure | P1–P6 | Persists raw reviews, cleaned reviews, analysis, report metadata (and report body when using a hosted DB), delivery status, recipient list. SQLite for local runs; **PostgreSQL** when `DATABASE_URL` is set (e.g. Supabase, Neon). For **Supabase** on Streamlit Cloud or GitHub Actions, use the **connection pooler** URI (port 6543), not the direct connection (5432). |
+| **Object storage / file system** | Infrastructure | P4, P5, UI | When not using a hosted DB: report HTML is written to the file system (`data/reports/`). When `DATABASE_URL` is set, report body is stored in **report_metadata.body_html** so no separate blob storage is needed. |
 | **Groq API** | External service | P3 | LLM for theme extraction (with count of reviews mapped per theme), quotes (each with its rating), and action ideas. Requires API key. |
 | **Gemini API** | External service | P4 | LLM for composing the weekly one-pager from analysis. Retry with exponential backoff on 429 (quota limits). Requires API key. |
 | **Email provider** (e.g. SendGrid, AWS SES, SMTP) | External service | P5 | Sends the weekly one-pager to the recipient list. Requires credentials and sender identity. |
@@ -53,7 +53,7 @@ The system uses a single logical storage layer with two parts:
 
 - **Object/Blob storage (or file system):** When not using a hosted DB, the report HTML is written to the file system (e.g. `data/reports/`). When `DATABASE_URL` is set, report HTML is stored in **report_metadata.body_html** so the Actions runner and Streamlit share the same data without shared file storage.
 
-**Data flow and storage:** P1 fetches reviews via google-play-scraper and writes raw reviews to the database. P2 reads raw reviews, writes cleaned reviews to the database. P3 reads cleaned reviews from the database, writes theme/quote/action results to the database (or a dedicated analysis table). P4 reads analysis from the database, writes the note to object storage and report metadata to the database. P5 reads report body from object storage and recipient list from the database, writes delivery status to the database. UI and scheduler read/write recipients, report metadata, and delivery status.
+**Data flow and storage:** P1 fetches reviews via google-play-scraper and writes raw reviews to the database. P2 reads raw reviews, writes cleaned reviews to the database. P3 reads cleaned reviews, writes analysis to the database. P4 reads analysis, composes the report with Gemini, writes the HTML to the file system and (when `DATABASE_URL` is set) to **report_metadata.body_html**, and writes report metadata to the database. P5 reads report metadata and (when available) body from the database, else from the file system; reads recipients from the database; writes delivery status to the database. The **Streamlit** UI and the **GitHub Actions** scheduler both use the same database when `DATABASE_URL` is set, so recipients added in the UI are used by the scheduled run.
 
 ### 3.2 Email Service
 
@@ -65,7 +65,7 @@ The system uses a single logical storage layer with two parts:
 ### 3.3 Scheduling Mechanism (Weekly Automatic Send)
 
 - **Role:** Run the full pipeline (P1 through P5) once per week without user action.
-- **Component:** The repo includes a **GitHub Actions workflow** (`.github/workflows/weekly-product-pulse.yml`) that runs every **Monday at 10:00 AM IST**. The workflow runs the **Python pipeline on the runner** (no external URL). It requires **`DATABASE_URL`** (a shared hosted Postgres) so the same DB is used by Streamlit and the scheduled run; recipients added in the Streamlit UI are then used automatically when the Monday pipeline runs. Alternatively, Phase 6 can be deployed and use in-process node-cron; in that case the trigger invokes the same pipeline entry point; only the trigger differs (time-based vs user click).
+- **Component:** The repo includes a **GitHub Actions workflow** (`.github/workflows/weekly-product-pulse.yml`) that runs every **Monday at 10:00 AM IST** (10:00 AM IST = 04:30 UTC; cron `30 4 * * 1`). The workflow runs the **Python pipeline on the Actions runner** (no external URL or Phase 6 deployment required). It **requires `DATABASE_URL`** (a shared hosted Postgres connection string in repo Secrets) so the same DB is used by the Streamlit app and the scheduled run; recipients added in the Streamlit UI are then used automatically when the pipeline runs. Optional: Phase 6 (Node) can be deployed separately and use in-process cron; the repo workflow does not call it.
 - **Execution:** On schedule, the scheduler calls the pipeline with parameters: e.g. "fetch reviews for INDmoney (last 8–12 weeks)," "generate report and send to all active recipients." The pipeline runs P1→P2→P3→P4→P5 in sequence. P1 fetches fresh reviews from the Play Store via google-play-scraper each run; if the fetch returns no reviews in the window, the design defines behaviour (e.g. skip run and record "No data," or reuse last run’s data per policy).
 - **Idempotency:** Each run produces one report per week (keyed by week or run_id). Delivery status is per (report, recipient). Re-runs can overwrite that week’s report and re-send, or be treated as "manual resend"; the architecture should state which.
 
@@ -107,26 +107,25 @@ The system uses a single logical storage layer with two parts:
 
 ### Phase 4: Report Generation
 
-- **How it executes:** A report generator reads the analysis from the database for the current run. It uses **Gemini** to compose the weekly one-page note: top 3 themes (with **number of reviews per theme**), 3 user quotes (with **rating for each quote**), 3 action ideas, in a scannable format (headings, bullets). It enforces ≤250 words and ensures no PII. The Gemini client uses **retry with exponential backoff** on 429 (quota limits). The note is rendered to a final format (e.g. HTML for email and viewing). The artifact is written to **object storage** (path/key by report_id or week). A **report metadata** record is written to the database: report_id, week_start_date, status (generated), word_count, generated_at, storage_artifact_path (or URL).
-- **Components:** DB reader (analysis), Gemini composer, word counter, renderer, object storage writer, DB writer (metadata).
-- **Output and handoff:** Report body in object storage; metadata in database. P5 reads the body from storage and the recipient list from the database; UI reads metadata and body to "view one-pager" and show in lists.
+- **How it executes:** A report generator reads the analysis from the database for the current run. It uses **Gemini** to compose the weekly one-page note: top 3 themes (with **number of reviews per theme**), 3 user quotes (with **rating for each quote**), 3 action ideas, in a scannable format (headings, bullets). It enforces ≤250 words and ensures no PII. The Gemini client uses **retry with exponential backoff** on 429 (quota limits). The note is rendered to HTML. The HTML is written to the file system (e.g. `data/reports/<run_id>.html`). When **`DATABASE_URL`** is set (shared hosted DB), the HTML is also stored in **report_metadata.body_html** so the Actions runner and Streamlit can use it without shared file storage. A **report metadata** record is written: report_id, week_start_date, status, word_count, generated_at, storage_artifact_path, and optionally body_html.
+- **Components:** DB reader (analysis), Gemini composer, word counter, renderer, file/DB writer (body + metadata).
+- **Output and handoff:** Report body in file system and (when DATABASE_URL set) in report_metadata.body_html; metadata in database. P5 reads the body from the DB when body_html is present, else from the file system; UI reads metadata and body to list and view reports.
 
 ### Phase 5: Email Send
 
-- **How it executes:** The email send component runs after P4. It loads the report metadata and fetches the report body from object storage. It loads the active recipient list from the database. It builds the email (subject e.g. "INDmoney Product Pulse – [week date]," body = report content). For each recipient, it calls the **email service** to send. The email service uses the configured provider (SMTP/SendGrid/SES) and returns per-recipient status (Sent / Not Sent / Error). The pipeline writes one **delivery status** row per (report_id, recipient_email) with status, sent_at, and optional error_message.
-- **Components:** DB reader (report metadata, recipients), object storage reader (body), email builder, email service client, DB writer (delivery status).
+- **How it executes:** The email send component runs after P4. It loads the report metadata from the database. If **report_metadata.body_html** is present (hosted DB), it uses that as the report body; otherwise it reads the report HTML from the file system. It loads the active recipient list from the database. It builds the email (subject e.g. "INDmoney Product Pulse – [week date]," body = report content). For each recipient, it calls the **email service** to send. The email service uses the configured provider (SMTP/SendGrid/SES) and returns per-recipient status (Sent / Not Sent / Error). The pipeline writes one **delivery status** row per (report_id, recipient_email) with status, sent_at, and optional error_message.
+- **Components:** DB reader (report metadata, recipients; report body when stored in body_html), file reader (body when not in DB), email builder, email service client, DB writer (delivery status).
 - **Output and handoff:** Emails sent to all active recipients; delivery status persisted. UI reads delivery status to show "Sent," "Not Sent," "Error" and optional error details.
 
 ### Phase 6: UI and Trigger
 
-- **How it executes:** The UI is a separate surface (web app or internal tool) that talks to a backend API. The backend reads/writes the database and, for "view one-pager," reads from object storage (or a signed URL). The same backend exposes the pipeline entry point used by the scheduler and by the manual "Generate weekly report" button.
-- **UI capabilities:**
-  - **Recipients:** List recipients; add (email, optional name); edit (email, name); delete (soft-delete or remove). Actions call API that updates the **recipient list** table.
-  - **View weekly one-pager:** List of past reports (from report metadata: week, date, status). User selects a report; UI fetches and displays the report body (from storage or API that reads storage).
-  - **Email delivery status:** For a selected report, show per-recipient status: Sent (with sent_at), Not Sent, or Error (with error_message). Data comes from **delivery status** table.
-  - **Manual trigger:** "Generate weekly report" button calls the API that runs the full pipeline (P1→P5). UI shows running state, then success or failure; on success, the new report appears in the list and delivery status is available.
-- **Scheduler:** Runs the same pipeline entry point on a fixed weekly schedule; no UI action required. Optionally the UI can show "last run" time and next scheduled run if the backend exposes this.
-- **Components:** Frontend (pages for recipients, reports list, report detail, delivery status, trigger button), backend API (CRUD recipients, list reports, get report body, get delivery status, trigger pipeline), pipeline orchestrator (invoked by API and by scheduler).
+- **How it executes:** The **primary UI** is the **Streamlit app** (`streamlit_app.py`): it runs the full pipeline (P1–P5) in-process, manages recipients, and shows reports and delivery status. When `DATABASE_URL` is set (e.g. Supabase pooler URI), the same database is used by Streamlit and the GitHub Actions workflow, so recipients added in the UI are used by the scheduled Monday run. Optionally, Streamlit can be configured to use an **external Phase 6 API** (Node backend) instead of the built-in pipeline; in that case the Node server holds the DB and pipeline.
+- **UI capabilities (Streamlit):**
+  - **Recipients:** List, add (email, optional display name), edit, delete (soft-delete). Data in shared DB when DATABASE_URL is set.
+  - **Weekly email delivery:** Table of reports with per-report counts: sent, failed, pending (from report_metadata and delivery_status).
+  - **Manual trigger:** "Run weekly pipeline (P1→P5)" in the sidebar runs ingest → clean → analyze → report → email in the app.
+- **Scheduler:** The **GitHub Actions** workflow (`.github/workflows/weekly-product-pulse.yml`) runs the **Python pipeline on the runner** every Monday at 10:00 AM IST. It requires `DATABASE_URL` in repo Secrets; no Phase 6 deployment is required. The workflow does not call any external URL.
+- **Components:** Streamlit frontend (recipients, reports/delivery table, pipeline trigger), Python pipeline (P1–P5), optional Phase 6 Node API for alternative deployment.
 
 ---
 
@@ -169,14 +168,14 @@ The system uses a single logical storage layer with two parts:
   │  P4: Report Generation (Gemini only; retry on 429)                            │
   │  • Read analysis from DB                                                      │
   │  • Compose one-pager with Gemini (reviews per theme, rating per quote; ≤250w)  │
-  │  • Render HTML; write body ─────────────────────────────────> Object storage │
+  │  • Render HTML; write body ──────> File system + DB (body_html if DATABASE_URL)│
   │  • Write report metadata ───────────────────────────────────> Database      │
   └─────────────────────────────────────────────────────────────────────────────┘
                     │
                     ▼
   ┌─────────────────────────────────────────────────────────────────────────────┐
   │  P5: Email Send                                                               │
-  │  • Read report metadata + body (from DB + object storage)                     │
+  │  • Read report metadata (+ body_html from DB if set; else file system)        │
   │  • Read active recipients from DB                                             │
   │  • For each recipient: call Email Service → send                              │
   │  • Write delivery status (Sent / Not Sent / Error) ───────────> Database      │
@@ -195,10 +194,10 @@ The system uses a single logical storage layer with two parts:
 | P1 | Google Play (via google-play-scraper: INDmoney app, paginated) | Database: raw reviews (after date filter 8–12 weeks). |
 | P2 | Database: raw reviews | Database: cleaned reviews |
 | P3 | Database: cleaned reviews | Database: analysis (themes, quotes, actions). Auto-export to phase3-analysis.json. |
-| P4 | Database: analysis | Object storage: report body. Database: report metadata. |
-| P5 | Database: report metadata, recipients. Object storage: report body. | Database: delivery status. External: email via Email Service. |
-| UI | Database: recipients, report metadata, delivery status. Object storage (or API): report body. | Database: recipients (add/edit/delete). API: trigger pipeline. |
-| Scheduler | — | Invokes same pipeline entry point as UI trigger. |
+| P4 | Database: analysis | File system: report HTML. Database: report metadata (and body_html when DATABASE_URL set). |
+| P5 | Database: report metadata, recipients; report body from body_html or file. | Database: delivery status. External: email via Email Service. |
+| Streamlit UI | Database: recipients, report metadata, delivery status (and body when in body_html). | Database: recipients (add/edit/delete). In-app: trigger pipeline (P1–P5). |
+| GitHub Actions scheduler | — | Runs Python pipeline on runner; requires DATABASE_URL; uses same DB as Streamlit. |
 
 ---
 
@@ -206,23 +205,21 @@ The system uses a single logical storage layer with two parts:
 
 | Action | What happens |
 |--------|----------------|
-| Add recipient | UI sends new email (and optional name) to API; API inserts into recipient list (active). |
-| Edit recipient | UI sends updated email/name and id; API updates recipient row. |
-| Delete recipient | UI sends id; API soft-deletes or marks inactive so P5 no longer sends to them. |
-| View weekly one-pager | UI requests report by id/week; API loads report metadata, fetches body from storage, returns for display. |
-| See delivery status | UI requests delivery status for a report; API returns list of (recipient, status: Sent / Not Sent / Error, sent_at, error_message). |
-| Trigger report manually | UI calls "generate report" API; backend runs P1→P5; UI polls or gets callback for status; on success, new report and delivery rows exist. |
+| Add recipient | Streamlit (or Phase 6 API) writes to recipient list in DB (active). With DATABASE_URL, same list is used by the scheduled pipeline. |
+| Edit / Delete recipient | Streamlit or API updates or soft-deletes recipient in DB. |
+| View weekly delivery | Streamlit reads report_metadata and delivery_status from DB; shows per-report sent/failed/pending counts. |
+| Trigger report manually | In Streamlit: "Run weekly pipeline (P1→P5)" runs the Python pipeline in-process. With Phase 6 API: UI calls trigger endpoint; backend runs pipeline. |
 
 ---
 
 ## 9. Key Constraints (Reflected in Design)
 
 - **Data source:** Public Play Store data only. Reviews are fetched via **google-play-scraper** for the INDmoney app (no login; pagination and throttling applied). Date window 8–12 weeks applied after fetch.
-- **Storage:** Raw and cleaned reviews, analysis, report metadata, delivery status, and recipient list in database; report artifact in object storage.
+- **Storage:** Raw and cleaned reviews, analysis, report metadata, delivery status, and recipient list in database. Report body: file system when using SQLite; when `DATABASE_URL` is set, also (or only) in **report_metadata.body_html** so Streamlit and the Actions runner share the same data.
 - **LLM:** Phase 3 uses Groq only (themes, quotes with rating, action ideas). Phase 4 uses Gemini only for report composition; quota limits handled with retry/backoff.
-- **Report:** One-pager ≤250 words, stored in object storage and referenced by report metadata in DB.
+- **Report:** One-pager ≤250 words; stored in file system and, when using a hosted DB, in report_metadata.body_html.
 - **Email:** Sent weekly via Email Service to active recipients from DB; delivery status stored per (report, recipient).
-- **Scheduling:** Weekly automatic run via scheduler invoking the same pipeline as manual trigger.
+- **Scheduling:** Weekly automatic run every Monday 10:00 AM IST via GitHub Actions; workflow runs the Python pipeline on the runner and requires `DATABASE_URL` (shared Postgres). For Supabase, use the connection pooler URI (port 6543) for Streamlit Cloud and Actions.
 - **Privacy:** No usernames, emails, or IDs in report or LLM outputs; anonymization in P2 and checks in P3/P4.
 
 ---

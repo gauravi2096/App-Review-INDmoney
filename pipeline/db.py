@@ -238,10 +238,14 @@ def _pg_connection_url() -> str:
             "In Supabase: Project Settings → Database → Connection string → URI → choose 'Connection pooling' (Transaction mode). "
             "Use that URI (with your password) as DATABASE_URL."
         )
-    if "sslmode=" in url:
-        return url
     sep = "&" if "?" in url else "?"
-    return f"{url}{sep}sslmode=require"
+    if "sslmode=" not in url:
+        url = f"{url}{sep}sslmode=require"
+        sep = "&"
+    # Reduce idle timeouts on long phases (e.g. P1/P3/P4) when using poolers (Supabase, etc.)
+    if "keepalives_idle=" not in url:
+        url = f"{url}{sep}options=-c%20keepalives_idle%3D30"
+    return url
 
 
 def get_connection(db_path: Optional[str] = None):
@@ -249,11 +253,19 @@ def get_connection(db_path: Optional[str] = None):
     if config.DATABASE_URL:
         import psycopg2
         url = _pg_connection_url()
-        raw = psycopg2.connect(url, connect_timeout=15)
-        # Use a cursor that returns rows we can adapt to our PgRow for index access
-        conn = PgConnection(raw)
-        _init_schema_pg(conn)
-        return conn
+        last_err = None
+        for attempt in range(3):
+            try:
+                raw = psycopg2.connect(url, connect_timeout=25)
+                conn = PgConnection(raw)
+                _init_schema_pg(conn)
+                return conn
+            except psycopg2.OperationalError as e:
+                last_err = e
+                if attempt < 2:
+                    import time
+                    time.sleep(2 * (attempt + 1))
+        raise last_err
     path = (db_path or config.DB_PATH)
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)

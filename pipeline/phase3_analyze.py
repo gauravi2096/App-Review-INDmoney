@@ -5,6 +5,7 @@ import time
 from typing import Any
 
 import requests
+from requests.exceptions import HTTPError
 
 from . import config
 from . import db as pipeline_db
@@ -94,7 +95,7 @@ def _normalize_analysis(parsed: dict) -> dict:
     ideas = [x for x in ideas if x]
     return {"themes": themes, "quotes": quotes, "actionIdeas": ideas}
 
-def _groq_complete(prompt: str) -> str:
+def _groq_complete_once(prompt: str) -> str:
     if not config.GROQ_API_KEY:
         raise RuntimeError("GROQ_API_KEY is not set")
     r = requests.post(
@@ -112,7 +113,7 @@ def _groq_complete(prompt: str) -> str:
             "temperature": 0.3,
             "max_tokens": 2048,
         },
-        timeout=60,
+        timeout=120,
     )
     r.raise_for_status()
     data = r.json()
@@ -120,6 +121,32 @@ def _groq_complete(prompt: str) -> str:
     if not content:
         raise RuntimeError("Groq API: no content in response")
     return content
+
+
+def _groq_complete(prompt: str) -> str:
+    """Call Groq with retries on 429. Dashboard totals do not show per-minute RPM/TPM; one pipeline run can fire many calls in a short window."""
+    max_attempts = 8
+    for attempt in range(max_attempts):
+        try:
+            return _groq_complete_once(prompt)
+        except HTTPError as e:
+            if e.response is not None and e.response.status_code == 429:
+                wait = 60
+                try:
+                    ra = e.response.headers.get("Retry-After")
+                    if ra and ra.isdigit():
+                        wait = min(300, int(ra))
+                except Exception:
+                    pass
+                if attempt < max_attempts - 1:
+                    time.sleep(wait + attempt * 15)
+                    continue
+            raise
+        except requests.RequestException as e:
+            if attempt < max_attempts - 1 and "429" in str(e):
+                time.sleep(60 + attempt * 15)
+                continue
+            raise
 
 def _split_batches(reviews: list[dict], max_tokens: int) -> list[list[dict]]:
     base_prompt = _build_prompt([])
@@ -155,17 +182,9 @@ def run(db_path: str | None = None, run_id_arg: str | None = None) -> dict:
         batch_results = []
         for i, batch in enumerate(batches):
             if i > 0:
-                time.sleep(config.BATCH_DELAY_MS / 1000.0)
+                time.sleep(max(config.BATCH_DELAY_MS / 1000.0, 2.0))
             prompt = _build_prompt(batch)
-            for attempt in range(5):
-                try:
-                    raw = _groq_complete(prompt)
-                    break
-                except Exception as e:
-                    if "429" in str(e) and attempt < 4:
-                        time.sleep(30)
-                        continue
-                    raise
+            raw = _groq_complete(prompt)
             parsed = _extract_json(raw)
             if parsed:
                 batch_results.append(_normalize_analysis(parsed))
