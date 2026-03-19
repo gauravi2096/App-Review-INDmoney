@@ -38,6 +38,21 @@ jobs:
             exit 1
           fi
 
+      - name: Validate required pipeline secrets
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          P5_SMTP_HOST: ${{ secrets.P5_SMTP_HOST }}
+          P5_SMTP_PORT: ${{ secrets.P5_SMTP_PORT }}
+          P5_SMTP_USER: ${{ secrets.P5_SMTP_USER }}
+          P5_SMTP_PASS: ${{ secrets.P5_SMTP_PASS }}
+        run: |
+          for v in GROQ_API_KEY P5_SMTP_HOST P5_SMTP_PORT P5_SMTP_USER P5_SMTP_PASS; do
+            if [ -z "${!v}" ]; then
+              echo "::error::$v is missing in repo Secrets"
+              exit 1
+            fi
+          done
+
       - name: Seed recipients (optional)
         env:
           # For end-to-end testing we ensure at least this address is present.
@@ -75,9 +90,10 @@ jobs:
           P1_DATE_WINDOW_WEEKS: "8"
           P3_BATCH_TOKEN_LIMIT: "3000"
           P3_BATCH_DELAY_MS: "30000"
+          # If Gemini key/quota is unavailable, Phase 4 now falls back to deterministic report text.
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          P5_FROM_ADDRESS: ${{ secrets.P5_FROM_ADDRESS }}
+          P5_FROM_ADDRESS: ${{ secrets.P5_FROM_ADDRESS || secrets.P5_SMTP_USER }}
           P5_SMTP_HOST: ${{ secrets.P5_SMTP_HOST }}
           P5_SMTP_PORT: ${{ secrets.P5_SMTP_PORT }}
           P5_SMTP_SECURE: ${{ secrets.P5_SMTP_SECURE }}

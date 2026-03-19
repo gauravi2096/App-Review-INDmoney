@@ -1,5 +1,6 @@
 """Phase 4: Read latest analysis, call Gemini for one-pager, write HTML and report_metadata."""
 import re
+import time
 from pathlib import Path
 
 import requests
@@ -82,6 +83,56 @@ def _gemini_complete_text(prompt: str) -> str:
         if not text:
             raise RuntimeError("Gemini API: no text in response")
         return text.strip()
+
+
+def _gemini_complete_with_retries(prompt: str) -> str:
+    last_err = None
+    for attempt in range(6):
+        try:
+            return _gemini_complete_text(prompt)
+        except Exception as e:
+            last_err = e
+            msg = str(e).lower()
+            # Retry transient or quota/rate cases, then fallback in caller.
+            if any(x in msg for x in ["429", "quota", "rate", "retry", "timeout", "temporar"]):
+                if attempt < 5:
+                    time.sleep(10 + attempt * 10)
+                    continue
+            break
+    raise last_err
+
+
+def _fallback_report_text(analysis: dict, report_context: dict | None) -> str:
+    total = (report_context or {}).get("totalReviews")
+    dmin = (report_context or {}).get("dateMin")
+    dmax = (report_context or {}).get("dateMax")
+    lines = ["PRODUCT PULSE WEEKLY"]
+    if dmin and dmax and total is not None:
+        lines.append(f"REPORT PERIOD: {dmin} to {dmax}. TOTAL REVIEWS ANALYZED: {total}.")
+    elif total is not None:
+        lines.append(f"TOTAL REVIEWS ANALYZED: {total}.")
+    lines.append("")
+    lines.append("KEY THEMES")
+    for t in (analysis.get("themes") or [])[:5]:
+        label = (t.get("label") or "Unnamed theme").strip()
+        desc = (t.get("description") or "").strip()
+        cnt = t.get("reviewCount")
+        cnt_txt = f" ({cnt} reviews)" if cnt is not None else ""
+        lines.append(f"- {label}: {desc}{cnt_txt}".strip())
+    lines.append("")
+    lines.append("VOICE OF THE USER")
+    for q in (analysis.get("quotes") or [])[:3]:
+        if isinstance(q, dict):
+            qt = (q.get("text") or "").strip()
+            rating = q.get("rating")
+            if qt:
+                lines.append(f'- "{qt}" ({rating}/5)' if rating is not None else f'- "{qt}"')
+    lines.append("")
+    lines.append("RECOMMENDED ACTIONS")
+    for a in (analysis.get("actionIdeas") or [])[:3]:
+        if a:
+            lines.append(f"- {str(a).strip()}")
+    return "\n".join(lines).strip()
     except ImportError:
         r = requests.post(
             f"https://generativelanguage.googleapis.com/v1beta/models/{config.GEMINI_MODEL}:generateContent?key={config.GEMINI_API_KEY}",
@@ -152,7 +203,11 @@ def run(db_path: str | None = None, run_id_arg: str | None = None) -> dict:
         conn.close()
 
     prompt = _build_report_prompt(analysis, config.MAX_WORDS, report_context)
-    body_text = _gemini_complete_text(prompt)
+    try:
+        body_text = _gemini_complete_with_retries(prompt)
+    except Exception:
+        # Keep the pipeline operational when Gemini quota is exhausted.
+        body_text = _fallback_report_text(analysis, report_context)
     word_count = _count_words(body_text)
     if word_count > config.MAX_WORDS:
         body_text, _ = _truncate_words(body_text, config.MAX_WORDS)
