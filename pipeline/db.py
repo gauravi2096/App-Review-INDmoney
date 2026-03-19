@@ -444,11 +444,26 @@ def get_report_metadata(conn, report_id: Optional[str] = None) -> Optional[dict]
         ).fetchone()
     if not row:
         return None
+    # `row` is a sqlite3.Row (supports len) or a PgRow (no __len__).
+    # Prefer named access for `body_html` when supported.
+    body_html = None
+    if hasattr(row, "keys"):
+        try:
+            keys = set(row.keys())
+            if "body_html" in keys:
+                body_html = row["body_html"]
+        except Exception:
+            body_html = None
+    else:
+        try:
+            body_html = row[3]
+        except Exception:
+            body_html = None
     return {
         "report_id": row[0],
         "week_start_date": row[1],
         "storage_artifact_path": row[2],
-        "body_html": row[3] if len(row) > 3 else None,
+        "body_html": body_html,
     }
 
 

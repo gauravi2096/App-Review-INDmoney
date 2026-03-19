@@ -70,16 +70,20 @@ def _gemini_complete_text(prompt: str) -> str:
     if not config.GEMINI_API_KEY:
         raise RuntimeError("GEMINI_API_KEY is not set")
     try:
-        import google.generativeai as genai
-        genai.configure(api_key=config.GEMINI_API_KEY)
-        model = genai.GenerativeModel(config.GEMINI_MODEL)
-        response = model.generate_content(
-            prompt,
-            generation_config={"temperature": 0.4, "max_output_tokens": 2048},
+        # google-generativeai is deprecated; use google-genai instead.
+        from google import genai
+        from google.genai import types
+
+        client = genai.Client(api_key=config.GEMINI_API_KEY)
+        response = client.models.generate_content(
+            model=config.GEMINI_MODEL,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                temperature=0.4,
+                max_output_tokens=2048,
+            ),
         )
-        text = getattr(response, "text", None) or (
-            (response.candidates[0].content.parts[0].text if response.candidates and response.candidates[0].content.parts else None)
-        )
+        text = getattr(response, "text", None)
         if not text:
             raise RuntimeError("Gemini API: no text in response")
         return text.strip()
