@@ -83,6 +83,18 @@ def _gemini_complete_text(prompt: str) -> str:
         if not text:
             raise RuntimeError("Gemini API: no text in response")
         return text.strip()
+    except ImportError:
+        r = requests.post(
+            f"https://generativelanguage.googleapis.com/v1beta/models/{config.GEMINI_MODEL}:generateContent?key={config.GEMINI_API_KEY}",
+            json={"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.4, "maxOutputTokens": 2048}},
+            timeout=60,
+        )
+        r.raise_for_status()
+        data = r.json()
+        text = (data.get("candidates") or [{}])[0].get("content", {}).get("parts", [{}])[0].get("text")
+        if not text:
+            raise RuntimeError("Gemini API: no text in response")
+        return text.strip()
 
 
 def _gemini_complete_with_retries(prompt: str) -> str:
@@ -133,18 +145,6 @@ def _fallback_report_text(analysis: dict, report_context: dict | None) -> str:
         if a:
             lines.append(f"- {str(a).strip()}")
     return "\n".join(lines).strip()
-    except ImportError:
-        r = requests.post(
-            f"https://generativelanguage.googleapis.com/v1beta/models/{config.GEMINI_MODEL}:generateContent?key={config.GEMINI_API_KEY}",
-            json={"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.4, "maxOutputTokens": 2048}},
-            timeout=60,
-        )
-        r.raise_for_status()
-        data = r.json()
-        text = (data.get("candidates") or [{}])[0].get("content", {}).get("parts", [{}])[0].get("text")
-        if not text:
-            raise RuntimeError("Gemini API: no text in response")
-        return text.strip()
 
 def _text_to_html(body_text: str, title: str = "Product Pulse Weekly") -> str:
     def escape(s: str) -> str:
