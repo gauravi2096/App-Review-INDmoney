@@ -1,28 +1,28 @@
-# Product Pulse: run the Python pipeline every Monday at 10:00 AM IST.
-# TEMPORARY: switched to Tuesday 10:00 AM IST for testing; revert to Monday (cron: '30 4 * * 1') after verification.
+# Product Pulse: run the Python pipeline daily at 10:00 AM IST.
 # Uses a shared hosted DB (Postgres): set DATABASE_URL in repo Secrets so recipients
 # added in the Streamlit UI are used by this run. Required secrets: DATABASE_URL,
 # GROQ_API_KEY, GEMINI_API_KEY, P5_* SMTP. Optional: RECIPIENT_EMAILS.
 
 name: Weekly Product Pulse
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 on:
   schedule:
-    # 10:00 AM IST = 04:30 UTC (IST = UTC+5:30). Tuesday = 2 (testing); Monday = 1 (production).
-    - cron: '30 4 * * 2'
+    # 10:00 AM IST = 04:30 UTC (IST = UTC+5:30).
+    - cron: '30 4 * * *'
   workflow_dispatch:
 
 jobs:
   run-pipeline:
     runs-on: ubuntu-latest
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.11'
 
