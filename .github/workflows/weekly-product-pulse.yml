@@ -11,7 +11,7 @@ env:
 on:
   schedule:
     # 10:00 AM IST = 04:30 UTC (IST = UTC+5:30).
-    - cron: '30 4 * * *'
+    - cron: '30 4 * * 1'
   workflow_dispatch:
 
 jobs:
