@@ -13,9 +13,77 @@ st.set_page_config(
     layout="wide",
 )
 
+from datetime import datetime
+
+import pandas as pd
+
 from pipeline import config as pipeline_config
 from pipeline import db as pipeline_db
 from pipeline.runner import run_weekly_pipeline
+
+def inject_custom_css():
+    st.markdown(
+        """
+        <style>
+        .stApp {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Inter",
+                Roboto, Helvetica, Arial, sans-serif;
+        }
+        /* Delete uses the tertiary (borderless) button type: muted by default,
+           only hints red on hover so it doesn't compete with Edit. */
+        button[kind="tertiary"] {
+            color: #8b8f98 !important;
+            font-size: 0.85rem;
+        }
+        button[kind="tertiary"]:hover {
+            color: #cf222e !important;
+            text-decoration: underline;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+def week_label(week_start_date, generated_at):
+    src = week_start_date or generated_at
+    if not src:
+        return "–"
+    try:
+        d = datetime.fromisoformat(str(src)[:10])
+    except Exception:
+        return str(src)[:10]
+    try:
+        day = d.strftime("%-d")
+    except ValueError:
+        day = str(d.day)
+    return f"Week of {d.strftime('%b')} {day}, {d.strftime('%Y')}"
+
+def render_delivery_table(rows):
+    if not rows:
+        st.info("No reports yet.")
+        return
+    df = pd.DataFrame(rows)
+
+    def tinted(color_on, color_off):
+        def _fn(col):
+            out = []
+            for v in col:
+                try:
+                    n = int(v)
+                except Exception:
+                    n = 0
+                out.append(f"color:{color_on}; font-weight:600" if n > 0 else f"color:{color_off}")
+            return out
+        return _fn
+
+    styled = (
+        df.style
+        .apply(tinted("#1a7f37", "#8b8f98"), subset=["Sent"])
+        .apply(tinted("#cf222e", "#8b8f98"), subset=["Failed"])
+        .apply(lambda col: ["color:#8b8f98"] * len(col), subset=["Pending"])
+        .set_properties(subset=["Run ID"], **{"color": "#8b8f98", "font-size": "0.82em"})
+    )
+    st.dataframe(styled, use_container_width=True, hide_index=True)
 
 def get_db_path():
     return pipeline_config.DB_PATH
@@ -39,6 +107,7 @@ def main():
     use_api = use_external_api()
     api_base = get_api_base() if use_api else None
 
+    inject_custom_css()
     st.title("Product Pulse")
     st.caption("Manage recipients, run the weekly pipeline (ingest → clean → analyze → report → email), and view delivery status.")
 
@@ -55,22 +124,34 @@ def main():
             return
         # --- API mode: recipients ---
         st.subheader("Recipients")
-        with st.expander("Add recipient", expanded=False):
-            add_email = st.text_input("Email", key="add_email", placeholder="email@example.com")
-            add_name = st.text_input("Display name (optional)", key="add_name")
-            if st.button("Add recipient"):
-                if not (add_email and add_email.strip()):
-                    st.error("Email is required.")
-                else:
-                    try:
-                        r = requests.post(f"{api_base}/api/recipients", json={"email": add_email.strip(), "display_name": (add_name.strip() or None) if add_name else None}, timeout=30)
-                        if r.status_code in (200, 201):
-                            st.success("Recipient added.")
-                            st.rerun()
+        if "show_add_recipient" not in st.session_state:
+            st.session_state.show_add_recipient = False
+        if st.button("➕ Add recipient", type="primary", key="toggle_add_recipient"):
+            st.session_state.show_add_recipient = not st.session_state.show_add_recipient
+        if st.session_state.show_add_recipient:
+            with st.container(border=True):
+                add_email = st.text_input("Email", key="add_email", placeholder="email@example.com")
+                add_name = st.text_input("Display name (optional)", key="add_name")
+                fc1, fc2 = st.columns([1, 1])
+                with fc1:
+                    if st.button("Add recipient", key="submit_add_recipient", type="primary"):
+                        if not (add_email and add_email.strip()):
+                            st.error("Email is required.")
                         else:
-                            st.error(r.json().get("error", f"HTTP {r.status_code}"))
-                    except Exception as e:
-                        st.error(str(e))
+                            try:
+                                r = requests.post(f"{api_base}/api/recipients", json={"email": add_email.strip(), "display_name": (add_name.strip() or None) if add_name else None}, timeout=30)
+                                if r.status_code in (200, 201):
+                                    st.session_state.show_add_recipient = False
+                                    st.success("Recipient added.")
+                                    st.rerun()
+                                else:
+                                    st.error(r.json().get("error", f"HTTP {r.status_code}"))
+                            except Exception as e:
+                                st.error(str(e))
+                with fc2:
+                    if st.button("Cancel", key="cancel_add_recipient"):
+                        st.session_state.show_add_recipient = False
+                        st.rerun()
         try:
             recipients = requests.get(f"{api_base}/api/recipients", timeout=30).json() or []
         except Exception:
@@ -78,11 +159,17 @@ def main():
         active = [r for r in recipients if r.get("active") == 1]
         for r in active:
             rid, email, display_name = r.get("id"), r.get("email", ""), r.get("display_name") or ""
+            edit_key = f"edit_open_{rid}"
+            if edit_key not in st.session_state:
+                st.session_state[edit_key] = False
             c1, c2, c3, c4 = st.columns([2, 2, 1, 1])
             with c1: st.text(email)
             with c2: st.text(display_name)
             with c3:
-                if st.button("Delete", key=f"del_{rid}", type="secondary"):
+                if st.button("Edit", key=f"edit_{rid}", type="secondary"):
+                    st.session_state[edit_key] = not st.session_state[edit_key]
+            with c4:
+                if st.button("Delete", key=f"del_{rid}", type="tertiary"):
                     try:
                         resp = requests.delete(f"{api_base}/api/recipients/{rid}", timeout=30)
                         if resp.status_code in (200, 204):
@@ -92,20 +179,27 @@ def main():
                             st.error(resp.json().get("error", f"HTTP {resp.status_code}"))
                     except Exception as ex:
                         st.error(str(ex))
-            with c4:
-                with st.expander("Edit"):
+            if st.session_state[edit_key]:
+                with st.container(border=True):
                     new_email = st.text_input("Email", value=email, key=f"edit_email_{rid}")
                     new_name = st.text_input("Display name", value=display_name, key=f"edit_name_{rid}")
-                    if st.button("Save", key=f"save_{rid}"):
-                        try:
-                            resp = requests.patch(f"{api_base}/api/recipients/{rid}", json={"email": new_email.strip(), "display_name": new_name.strip() or None}, timeout=30)
-                            if resp.status_code == 200:
-                                st.success("Updated.")
-                                st.rerun()
-                            else:
-                                st.error(resp.json().get("error", f"HTTP {resp.status_code}"))
-                        except Exception as ex:
-                            st.error(str(ex))
+                    ec1, ec2 = st.columns([1, 1])
+                    with ec1:
+                        if st.button("Save", key=f"save_{rid}", type="primary"):
+                            try:
+                                resp = requests.patch(f"{api_base}/api/recipients/{rid}", json={"email": new_email.strip(), "display_name": new_name.strip() or None}, timeout=30)
+                                if resp.status_code == 200:
+                                    st.session_state[edit_key] = False
+                                    st.success("Updated.")
+                                    st.rerun()
+                                else:
+                                    st.error(resp.json().get("error", f"HTTP {resp.status_code}"))
+                            except Exception as ex:
+                                st.error(str(ex))
+                    with ec2:
+                        if st.button("Cancel", key=f"cancel_edit_{rid}"):
+                            st.session_state[edit_key] = False
+                            st.rerun()
         if not active:
             st.info("No active recipients. Add one above.")
         st.divider()
@@ -114,11 +208,18 @@ def main():
             reports = requests.get(f"{api_base}/api/reports", timeout=30).json() or []
         except Exception:
             reports = []
-        if not reports:
-            st.info("No reports yet.")
-        else:
-            rows = [{"Report": r.get("report_id") or r.get("week_start_date", "–"), "Generated": (r.get("generated_at") or "–")[:10], "Sent": (r.get("delivery_summary") or {}).get("sent", 0), "Failed": (r.get("delivery_summary") or {}).get("failed", 0), "Pending": (r.get("delivery_summary") or {}).get("not_sent", 0)} for r in reports]
-            st.dataframe(rows, use_container_width=True, hide_index=True)
+        rows = [
+            {
+                "Week": week_label(r.get("week_start_date"), r.get("generated_at")),
+                "Generated": (r.get("generated_at") or "–")[:10],
+                "Sent": (r.get("delivery_summary") or {}).get("sent", 0),
+                "Failed": (r.get("delivery_summary") or {}).get("failed", 0),
+                "Pending": (r.get("delivery_summary") or {}).get("not_sent", 0),
+                "Run ID": r.get("report_id") or r.get("week_start_date", "–"),
+            }
+            for r in reports
+        ]
+        render_delivery_table(rows)
         st.sidebar.caption("Connected to Phase 6 API. Uncheck 'Use external Phase 6 API' to use the built-in pipeline.")
         return
 
@@ -145,19 +246,31 @@ def main():
 
     # --- Recipients (local DB) ---
     st.subheader("Recipients")
-    with st.expander("Add recipient", expanded=False):
-        add_email = st.text_input("Email", key="add_email", placeholder="email@example.com")
-        add_name = st.text_input("Display name (optional)", key="add_name")
-        if st.button("Add recipient"):
-            if not (add_email and add_email.strip()):
-                st.error("Email is required.")
-            else:
-                try:
-                    pipeline_db.add_recipient(conn, add_email.strip(), (add_name.strip() or None) if add_name else None)
-                    st.success("Recipient added.")
+    if "show_add_recipient" not in st.session_state:
+        st.session_state.show_add_recipient = False
+    if st.button("➕ Add recipient", type="primary", key="toggle_add_recipient"):
+        st.session_state.show_add_recipient = not st.session_state.show_add_recipient
+    if st.session_state.show_add_recipient:
+        with st.container(border=True):
+            add_email = st.text_input("Email", key="add_email", placeholder="email@example.com")
+            add_name = st.text_input("Display name (optional)", key="add_name")
+            fc1, fc2 = st.columns([1, 1])
+            with fc1:
+                if st.button("Add recipient", key="submit_add_recipient", type="primary"):
+                    if not (add_email and add_email.strip()):
+                        st.error("Email is required.")
+                    else:
+                        try:
+                            pipeline_db.add_recipient(conn, add_email.strip(), (add_name.strip() or None) if add_name else None)
+                            st.session_state.show_add_recipient = False
+                            st.success("Recipient added.")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(str(e))
+            with fc2:
+                if st.button("Cancel", key="cancel_add_recipient"):
+                    st.session_state.show_add_recipient = False
                     st.rerun()
-                except Exception as e:
-                    st.error(str(e))
 
     recipients = pipeline_db.list_recipients(conn)
     active = [r for r in recipients if r.get("active") == 1]
@@ -166,28 +279,41 @@ def main():
     else:
         for r in active:
             rid, email, display_name = r.get("id"), r.get("email", ""), r.get("display_name") or ""
+            edit_key = f"edit_open_{rid}"
+            if edit_key not in st.session_state:
+                st.session_state[edit_key] = False
             c1, c2, c3, c4 = st.columns([2, 2, 1, 1])
             with c1: st.text(email)
             with c2: st.text(display_name)
             with c3:
-                if st.button("Delete", key=f"del_{rid}", type="secondary"):
+                if st.button("Edit", key=f"edit_{rid}", type="secondary"):
+                    st.session_state[edit_key] = not st.session_state[edit_key]
+            with c4:
+                if st.button("Delete", key=f"del_{rid}", type="tertiary"):
                     try:
                         pipeline_db.deactivate_recipient_by_id(conn, rid)
                         st.success("Removed.")
                         st.rerun()
                     except Exception as ex:
                         st.error(str(ex))
-            with c4:
-                with st.expander("Edit"):
+            if st.session_state[edit_key]:
+                with st.container(border=True):
                     new_email = st.text_input("Email", value=email, key=f"edit_email_{rid}")
                     new_name = st.text_input("Display name", value=display_name, key=f"edit_name_{rid}")
-                    if st.button("Save", key=f"save_{rid}"):
-                        try:
-                            pipeline_db.update_recipient(conn, rid, email=new_email.strip(), display_name=new_name.strip() or None)
-                            st.success("Updated.")
+                    ec1, ec2 = st.columns([1, 1])
+                    with ec1:
+                        if st.button("Save", key=f"save_{rid}", type="primary"):
+                            try:
+                                pipeline_db.update_recipient(conn, rid, email=new_email.strip(), display_name=new_name.strip() or None)
+                                st.session_state[edit_key] = False
+                                st.success("Updated.")
+                                st.rerun()
+                            except Exception as ex:
+                                st.error(str(ex))
+                    with ec2:
+                        if st.button("Cancel", key=f"cancel_edit_{rid}"):
+                            st.session_state[edit_key] = False
                             st.rerun()
-                        except Exception as ex:
-                            st.error(str(ex))
     st.divider()
 
     # --- Reports and delivery (local DB) ---
@@ -203,13 +329,14 @@ def main():
             rid = r.get("report_id")
             summary = summary_map.get(rid, {"sent": 0, "failed": 0, "not_sent": 0})
             rows.append({
-                "Report / week": rid or r.get("week_start_date", "–"),
+                "Week": week_label(r.get("week_start_date"), r.get("generated_at")),
                 "Generated": (r.get("generated_at") or "–")[:10],
                 "Sent": summary["sent"],
                 "Failed": summary["failed"],
                 "Pending": summary["not_sent"],
+                "Run ID": rid or r.get("week_start_date", "–"),
             })
-        st.dataframe(rows, use_container_width=True, hide_index=True)
+        render_delivery_table(rows)
 
     conn.close()
     st.sidebar.divider()
