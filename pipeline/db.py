@@ -139,6 +139,7 @@ def _init_schema_sqlite(conn: sqlite3.Connection) -> None:
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         email TEXT NOT NULL UNIQUE,
         display_name TEXT,
+        role_department TEXT,
         active INTEGER NOT NULL DEFAULT 1,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
@@ -156,6 +157,10 @@ def _init_schema_sqlite(conn: sqlite3.Connection) -> None:
     """)
     try:
         conn.execute("ALTER TABLE report_metadata ADD COLUMN body_html TEXT")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        conn.execute("ALTER TABLE recipients ADD COLUMN role_department TEXT")
     except sqlite3.OperationalError:
         pass
     conn.commit()
@@ -211,6 +216,7 @@ def _init_schema_pg(conn: "PgConnection") -> None:
         id SERIAL PRIMARY KEY,
         email TEXT NOT NULL UNIQUE,
         display_name TEXT,
+        role_department TEXT,
         active INTEGER NOT NULL DEFAULT 1,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
@@ -225,6 +231,7 @@ def _init_schema_pg(conn: "PgConnection") -> None:
         error_message TEXT,
         PRIMARY KEY (report_id, recipient_email)
     );
+    ALTER TABLE recipients ADD COLUMN IF NOT EXISTS role_department TEXT;
     """)
 
 
@@ -494,33 +501,40 @@ def upsert_delivery_status(
 # --- UI: recipients CRUD and reports list ---
 def list_recipients(conn) -> list[dict]:
     rows = conn.execute(
-        "SELECT id, email, display_name, active, created_at, updated_at FROM recipients ORDER BY email"
+        "SELECT id, email, display_name, role_department, active, created_at, updated_at FROM recipients ORDER BY email"
     ).fetchall()
     return [dict(r) for r in rows]
 
 
-def add_recipient(conn, email: str, display_name: Optional[str] = None) -> None:
+def add_recipient(
+    conn, email: str, display_name: Optional[str] = None, role_department: Optional[str] = None
+) -> None:
     from datetime import datetime
     now = datetime.utcnow().isoformat() + "Z"
     conn.execute(
-        """INSERT INTO recipients (email, display_name, active, created_at, updated_at) VALUES (?,?,1,?,?)
-           ON CONFLICT(email) DO UPDATE SET display_name=excluded.display_name, active=1, updated_at=excluded.updated_at""",
-        (email, display_name or None, now, now),
+        """INSERT INTO recipients (email, display_name, role_department, active, created_at, updated_at) VALUES (?,?,?,1,?,?)
+           ON CONFLICT(email) DO UPDATE SET display_name=excluded.display_name, role_department=excluded.role_department,
+           active=1, updated_at=excluded.updated_at""",
+        (email, display_name or None, role_department or None, now, now),
     )
     conn.commit()
 
 
 def get_recipient_by_id(conn, id: int) -> Optional[dict]:
     row = conn.execute(
-        "SELECT id, email, display_name, active, created_at, updated_at FROM recipients WHERE id = ?", (id,)
+        "SELECT id, email, display_name, role_department, active, created_at, updated_at FROM recipients WHERE id = ?", (id,)
     ).fetchone()
     return dict(row) if row else None
 
 
 def update_recipient(
-    conn, id: int, email: Optional[str] = None, display_name: Optional[str] = None
+    conn,
+    id: int,
+    email: Optional[str] = None,
+    display_name: Optional[str] = None,
+    role_department: Optional[str] = None,
 ) -> bool:
-    cur = conn.execute("SELECT email, display_name FROM recipients WHERE id = ?", (id,))
+    cur = conn.execute("SELECT email, display_name, role_department FROM recipients WHERE id = ?", (id,))
     row = cur.fetchone()
     if not row:
         return False
@@ -528,7 +542,11 @@ def update_recipient(
     now = datetime.utcnow().isoformat() + "Z"
     e = email if email is not None else row[0]
     d = display_name if display_name is not None else row[1]
-    conn.execute("UPDATE recipients SET email=?, display_name=?, updated_at=? WHERE id=?", (e, d, now, id))
+    rd = role_department if role_department is not None else row[2]
+    conn.execute(
+        "UPDATE recipients SET email=?, display_name=?, role_department=?, updated_at=? WHERE id=?",
+        (e, d, rd, now, id),
+    )
     conn.commit()
     return True
 

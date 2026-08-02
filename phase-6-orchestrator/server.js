@@ -112,16 +112,20 @@ app.get('/api/recipients', (_req, res) => {
 });
 
 app.post('/api/recipients', (req, res) => {
-  const { email, display_name } = req.body || {};
+  const { email, display_name, role_department } = req.body || {};
   if (!email || typeof email !== 'string' || !email.trim()) {
     return res.status(400).json({ error: 'email is required' });
   }
   const db = openDb(config.dbPath);
   try {
-    addRecipient(db, { email: email.trim(), display_name: display_name != null ? String(display_name).trim() || null : null });
+    addRecipient(db, {
+      email: email.trim(),
+      display_name: display_name != null ? String(display_name).trim() || null : null,
+      role_department: role_department != null ? String(role_department).trim() || null : null,
+    });
     const rows = listRecipients(db);
     const added = rows.find((r) => r.email === email.trim());
-    res.status(201).json(added || { email: email.trim(), display_name: display_name || null });
+    res.status(201).json(added || { email: email.trim(), display_name: display_name || null, role_department: role_department || null });
   } catch (err) {
     if (err.message && err.message.includes('UNIQUE')) return res.status(409).json({ error: 'Email already exists' });
     throw err;
@@ -133,12 +137,13 @@ app.post('/api/recipients', (req, res) => {
 app.patch('/api/recipients/:id', (req, res) => {
   const id = parseInt(req.params.id, 10);
   if (Number.isNaN(id)) return res.status(400).json({ error: 'Invalid id' });
-  const { email, display_name } = req.body || {};
+  const { email, display_name, role_department } = req.body || {};
   const db = openDb(config.dbPath);
   try {
     const ok = updateRecipient(db, id, {
       ...(email !== undefined && { email: String(email).trim() }),
       ...(display_name !== undefined && { display_name: display_name === '' ? null : String(display_name).trim() }),
+      ...(role_department !== undefined && { role_department: role_department === '' ? null : String(role_department).trim() }),
     });
     if (!ok) return res.status(404).json({ error: 'Recipient not found' });
     const updated = getRecipientById(db, id);

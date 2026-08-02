@@ -1,5 +1,5 @@
 """
-Product Pulse – Streamlit app.
+INDmoney Review Pulse – Streamlit app.
 Runs all phases (P1–P6) in one deployment: manage recipients, trigger pipeline, view reports and delivery.
 Uses local SQLite and Python pipeline by default. Optional: connect to Phase 6 API instead (sidebar).
 """
@@ -8,14 +8,16 @@ import streamlit as st
 
 # Page config (must be first Streamlit command)
 st.set_page_config(
-    page_title="Product Pulse",
+    page_title="INDmoney Review Pulse",
     page_icon="📊",
     layout="wide",
 )
 
 from datetime import datetime
+from pathlib import Path
 
 import pandas as pd
+import streamlit.components.v1 as components
 
 from pipeline import config as pipeline_config
 from pipeline import db as pipeline_db
@@ -39,8 +41,49 @@ def inject_custom_css():
             color: #cf222e !important;
             text-decoration: underline;
         }
+        /* Buttons render with their own left padding, so the "Add recipient" CTA's
+           icon/label sit ~12px right of the section heading and rows above/below
+           it. Pull it back so its visible content lines up with that left margin. */
+        .st-key-add_recipient_cta {
+            margin-left: -12px;
+        }
         </style>
         """,
+        unsafe_allow_html=True,
+    )
+
+ROLE_OPTIONS = ["Product", "Marketing", "Sales", "Support", "Leadership", "Other"]
+ROLE_PLACEHOLDER = "— Select —"
+
+def render_role_picker(key_prefix, current_value=None):
+    current_value = (current_value or "").strip()
+    choices = [ROLE_PLACEHOLDER] + ROLE_OPTIONS
+    if current_value in ROLE_OPTIONS:
+        default_index = choices.index(current_value)
+        default_other = ""
+    elif current_value:
+        default_index = choices.index("Other")
+        default_other = current_value
+    else:
+        default_index = 0
+        default_other = ""
+    choice = st.selectbox("Role / Department", choices, index=default_index, key=f"{key_prefix}_role_select")
+    if choice == "Other":
+        other_val = st.text_input(
+            "Specify role / department", value=default_other, key=f"{key_prefix}_role_other", placeholder="e.g. Data Science"
+        )
+        return (other_val or "").strip() or None
+    if choice == ROLE_PLACEHOLDER:
+        return None
+    return choice
+
+def render_role_badge(role_department):
+    if not role_department:
+        st.caption("—")
+        return
+    st.markdown(
+        f'<span style="background:#EEF0FF;color:#4F46E5;border-radius:999px;'
+        f'padding:2px 10px;font-size:0.78rem;font-weight:600;white-space:nowrap;">{role_department}</span>',
         unsafe_allow_html=True,
     )
 
@@ -58,32 +101,81 @@ def week_label(week_start_date, generated_at):
         day = str(d.day)
     return f"Week of {d.strftime('%b')} {day}, {d.strftime('%Y')}"
 
-def render_delivery_table(rows):
+def fetch_report_local(conn, report_id, storage_artifact_path):
+    meta = pipeline_db.get_report_metadata(conn, report_id)
+    body_html = meta.get("body_html") if meta else None
+    if body_html:
+        return body_html, "database"
+    # body_html is only populated when DATABASE_URL is set; otherwise fall back to
+    # the file on disk. storage_artifact_path is stored relative to the repo root
+    # without the configured reports dir, so also try resolving by filename alone.
+    candidates = []
+    if storage_artifact_path:
+        candidates.append(Path(storage_artifact_path))
+        candidates.append(Path(pipeline_config.REPORTS_DIR) / Path(storage_artifact_path).name)
+    for path in candidates:
+        try:
+            if path.exists():
+                return path.read_text(encoding="utf-8"), "local file"
+        except Exception:
+            continue
+    return None, None
+
+def fetch_report_api(api_base, requests_module, report_id, storage_artifact_path):
+    try:
+        resp = requests_module.get(f"{api_base}/api/reports/{report_id}/html", timeout=15)
+        if resp.status_code == 200 and resp.text:
+            return resp.text, "Phase 6 API"
+    except Exception:
+        pass
+    return None, None
+
+def render_delivery_table(rows, fetch_report_fn=None):
     if not rows:
         st.info("No reports yet.")
         return
-    df = pd.DataFrame(rows)
 
-    def tinted(color_on, color_off):
-        def _fn(col):
-            out = []
-            for v in col:
-                try:
-                    n = int(v)
-                except Exception:
-                    n = 0
-                out.append(f"color:{color_on}; font-weight:600" if n > 0 else f"color:{color_off}")
-            return out
-        return _fn
+    def colored(value, color_on, color_off):
+        try:
+            n = int(value)
+        except Exception:
+            n = 0
+        color = color_on if n > 0 else color_off
+        return f"<span style='color:{color}; font-weight:600'>{value}</span>"
 
-    styled = (
-        df.style
-        .apply(tinted("#1a7f37", "#8b8f98"), subset=["Sent"])
-        .apply(tinted("#cf222e", "#8b8f98"), subset=["Failed"])
-        .apply(lambda col: ["color:#8b8f98"] * len(col), subset=["Pending"])
-        .set_properties(subset=["Run ID"], **{"color": "#8b8f98", "font-size": "0.82em"})
-    )
-    st.dataframe(styled, use_container_width=True, hide_index=True)
+    widths = [1.7, 1.1, 0.7, 0.7, 0.8, 1.7, 1.2]
+    header_cols = st.columns(widths)
+    for col, label in zip(header_cols, ["Week", "Generated", "Sent", "Failed", "Pending", "Run ID", ""]):
+        if label:
+            col.markdown(f"<span style='color:#8b8f98; font-size:0.82em; font-weight:600;'>{label}</span>", unsafe_allow_html=True)
+    st.markdown("<hr style='margin:4px 0 8px;'>", unsafe_allow_html=True)
+
+    for row in rows:
+        report_id = row.get("_report_id")
+        cols = st.columns(widths)
+        cols[0].write(row["Week"])
+        cols[1].write(row["Generated"])
+        cols[2].markdown(colored(row["Sent"], "#1a7f37", "#8b8f98"), unsafe_allow_html=True)
+        cols[3].markdown(colored(row["Failed"], "#cf222e", "#8b8f98"), unsafe_allow_html=True)
+        cols[4].markdown(f"<span style='color:#8b8f98'>{row['Pending']}</span>", unsafe_allow_html=True)
+        cols[5].markdown(f"<span style='color:#8b8f98; font-size:0.82em'>{row['Run ID']}</span>", unsafe_allow_html=True)
+        toggle_key = f"view_report_{report_id}"
+        with cols[6]:
+            if st.button("View report", key=f"btn_{toggle_key}", type="tertiary", disabled=not report_id):
+                st.session_state[toggle_key] = not st.session_state.get(toggle_key, False)
+        if report_id and st.session_state.get(toggle_key):
+            with st.container(border=True):
+                content, source = fetch_report_fn(report_id, row.get("_storage_path")) if fetch_report_fn else (None, None)
+                if content:
+                    st.caption(f"Report content for {report_id} (source: {source})")
+                    components.html(content, height=500, scrolling=True)
+                else:
+                    st.info(
+                        "Report content isn't available for this run. It's only stored in the database "
+                        "when DATABASE_URL (shared hosted DB) is set; otherwise it relies on the local report "
+                        "file, which may no longer exist."
+                    )
+        st.divider()
 
 def get_db_path():
     return pipeline_config.DB_PATH
@@ -108,7 +200,7 @@ def main():
     api_base = get_api_base() if use_api else None
 
     inject_custom_css()
-    st.title("Product Pulse")
+    st.title("INDmoney Review Pulse")
     st.caption("Manage recipients, run the weekly pipeline (ingest → clean → analyze → report → email), and view delivery status.")
 
     if use_api:
@@ -126,12 +218,14 @@ def main():
         st.subheader("Recipients")
         if "show_add_recipient" not in st.session_state:
             st.session_state.show_add_recipient = False
-        if st.button("➕ Add recipient", type="primary", key="toggle_add_recipient"):
-            st.session_state.show_add_recipient = not st.session_state.show_add_recipient
+        with st.container(key="add_recipient_cta"):
+            if st.button("➕ Add recipient", type="primary", key="toggle_add_recipient"):
+                st.session_state.show_add_recipient = not st.session_state.show_add_recipient
         if st.session_state.show_add_recipient:
             with st.container(border=True):
                 add_email = st.text_input("Email", key="add_email", placeholder="email@example.com")
                 add_name = st.text_input("Display name (optional)", key="add_name")
+                add_role = render_role_picker("add")
                 fc1, fc2 = st.columns([1, 1])
                 with fc1:
                     if st.button("Add recipient", key="submit_add_recipient", type="primary"):
@@ -139,7 +233,7 @@ def main():
                             st.error("Email is required.")
                         else:
                             try:
-                                r = requests.post(f"{api_base}/api/recipients", json={"email": add_email.strip(), "display_name": (add_name.strip() or None) if add_name else None}, timeout=30)
+                                r = requests.post(f"{api_base}/api/recipients", json={"email": add_email.strip(), "display_name": (add_name.strip() or None) if add_name else None, "role_department": add_role}, timeout=30)
                                 if r.status_code in (200, 201):
                                     st.session_state.show_add_recipient = False
                                     st.success("Recipient added.")
@@ -159,16 +253,18 @@ def main():
         active = [r for r in recipients if r.get("active") == 1]
         for r in active:
             rid, email, display_name = r.get("id"), r.get("email", ""), r.get("display_name") or ""
+            role_department = r.get("role_department") or ""
             edit_key = f"edit_open_{rid}"
             if edit_key not in st.session_state:
                 st.session_state[edit_key] = False
-            c1, c2, c3, c4 = st.columns([2, 2, 1, 1])
+            c1, c2, c3, c4, c5 = st.columns([2, 1.5, 1.3, 0.75, 0.75])
             with c1: st.text(email)
             with c2: st.text(display_name)
-            with c3:
+            with c3: render_role_badge(role_department)
+            with c4:
                 if st.button("Edit", key=f"edit_{rid}", type="secondary"):
                     st.session_state[edit_key] = not st.session_state[edit_key]
-            with c4:
+            with c5:
                 if st.button("Delete", key=f"del_{rid}", type="tertiary"):
                     try:
                         resp = requests.delete(f"{api_base}/api/recipients/{rid}", timeout=30)
@@ -183,11 +279,12 @@ def main():
                 with st.container(border=True):
                     new_email = st.text_input("Email", value=email, key=f"edit_email_{rid}")
                     new_name = st.text_input("Display name", value=display_name, key=f"edit_name_{rid}")
+                    new_role = render_role_picker(f"edit_{rid}", current_value=role_department)
                     ec1, ec2 = st.columns([1, 1])
                     with ec1:
                         if st.button("Save", key=f"save_{rid}", type="primary"):
                             try:
-                                resp = requests.patch(f"{api_base}/api/recipients/{rid}", json={"email": new_email.strip(), "display_name": new_name.strip() or None}, timeout=30)
+                                resp = requests.patch(f"{api_base}/api/recipients/{rid}", json={"email": new_email.strip(), "display_name": new_name.strip() or None, "role_department": new_role}, timeout=30)
                                 if resp.status_code == 200:
                                     st.session_state[edit_key] = False
                                     st.success("Updated.")
@@ -216,10 +313,12 @@ def main():
                 "Failed": (r.get("delivery_summary") or {}).get("failed", 0),
                 "Pending": (r.get("delivery_summary") or {}).get("not_sent", 0),
                 "Run ID": r.get("report_id") or r.get("week_start_date", "–"),
+                "_report_id": r.get("report_id"),
+                "_storage_path": r.get("storage_artifact_path"),
             }
             for r in reports
         ]
-        render_delivery_table(rows)
+        render_delivery_table(rows, fetch_report_fn=lambda rid, sp: fetch_report_api(api_base, requests, rid, sp))
         st.sidebar.caption("Connected to Phase 6 API. Uncheck 'Use external Phase 6 API' to use the built-in pipeline.")
         return
 
@@ -248,12 +347,14 @@ def main():
     st.subheader("Recipients")
     if "show_add_recipient" not in st.session_state:
         st.session_state.show_add_recipient = False
-    if st.button("➕ Add recipient", type="primary", key="toggle_add_recipient"):
-        st.session_state.show_add_recipient = not st.session_state.show_add_recipient
+    with st.container(key="add_recipient_cta"):
+        if st.button("➕ Add recipient", type="primary", key="toggle_add_recipient"):
+            st.session_state.show_add_recipient = not st.session_state.show_add_recipient
     if st.session_state.show_add_recipient:
         with st.container(border=True):
             add_email = st.text_input("Email", key="add_email", placeholder="email@example.com")
             add_name = st.text_input("Display name (optional)", key="add_name")
+            add_role = render_role_picker("add")
             fc1, fc2 = st.columns([1, 1])
             with fc1:
                 if st.button("Add recipient", key="submit_add_recipient", type="primary"):
@@ -261,7 +362,7 @@ def main():
                         st.error("Email is required.")
                     else:
                         try:
-                            pipeline_db.add_recipient(conn, add_email.strip(), (add_name.strip() or None) if add_name else None)
+                            pipeline_db.add_recipient(conn, add_email.strip(), (add_name.strip() or None) if add_name else None, add_role)
                             st.session_state.show_add_recipient = False
                             st.success("Recipient added.")
                             st.rerun()
@@ -279,16 +380,18 @@ def main():
     else:
         for r in active:
             rid, email, display_name = r.get("id"), r.get("email", ""), r.get("display_name") or ""
+            role_department = r.get("role_department") or ""
             edit_key = f"edit_open_{rid}"
             if edit_key not in st.session_state:
                 st.session_state[edit_key] = False
-            c1, c2, c3, c4 = st.columns([2, 2, 1, 1])
+            c1, c2, c3, c4, c5 = st.columns([2, 1.5, 1.3, 0.75, 0.75])
             with c1: st.text(email)
             with c2: st.text(display_name)
-            with c3:
+            with c3: render_role_badge(role_department)
+            with c4:
                 if st.button("Edit", key=f"edit_{rid}", type="secondary"):
                     st.session_state[edit_key] = not st.session_state[edit_key]
-            with c4:
+            with c5:
                 if st.button("Delete", key=f"del_{rid}", type="tertiary"):
                     try:
                         pipeline_db.deactivate_recipient_by_id(conn, rid)
@@ -300,11 +403,12 @@ def main():
                 with st.container(border=True):
                     new_email = st.text_input("Email", value=email, key=f"edit_email_{rid}")
                     new_name = st.text_input("Display name", value=display_name, key=f"edit_name_{rid}")
+                    new_role = render_role_picker(f"edit_{rid}", current_value=role_department)
                     ec1, ec2 = st.columns([1, 1])
                     with ec1:
                         if st.button("Save", key=f"save_{rid}", type="primary"):
                             try:
-                                pipeline_db.update_recipient(conn, rid, email=new_email.strip(), display_name=new_name.strip() or None)
+                                pipeline_db.update_recipient(conn, rid, email=new_email.strip(), display_name=new_name.strip() or None, role_department=new_role or "")
                                 st.session_state[edit_key] = False
                                 st.success("Updated.")
                                 st.rerun()
@@ -335,15 +439,17 @@ def main():
                 "Failed": summary["failed"],
                 "Pending": summary["not_sent"],
                 "Run ID": rid or r.get("week_start_date", "–"),
+                "_report_id": rid,
+                "_storage_path": r.get("storage_artifact_path"),
             })
-        render_delivery_table(rows)
+        render_delivery_table(rows, fetch_report_fn=lambda rid, sp: fetch_report_local(conn, rid, sp))
 
     conn.close()
     st.sidebar.divider()
     if pipeline_config.DATABASE_URL:
         st.sidebar.caption("Using shared hosted DB (DATABASE_URL). Recipients and reports are shared with the scheduled pipeline.")
     else:
-        st.sidebar.caption("Product Pulse: all phases run in this app. Data in local SQLite. Set DATABASE_URL to use a shared hosted DB.")
+        st.sidebar.caption("INDmoney Review Pulse: all phases run in this app. Data in local SQLite. Set DATABASE_URL to use a shared hosted DB.")
 
 
 if __name__ == "__main__":

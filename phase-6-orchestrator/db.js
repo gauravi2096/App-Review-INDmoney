@@ -76,7 +76,7 @@ export function getDeliveryStatus(db, reportId) {
 export function listRecipients(db) {
   return db
     .prepare(
-      `SELECT id, email, display_name, active, created_at, updated_at
+      `SELECT id, email, display_name, role_department, active, created_at, updated_at
        FROM ${RECIPIENTS_TABLE}
        ORDER BY email`
     )
@@ -109,15 +109,15 @@ export function getDeliverySummaryPerReport(db) {
 /**
  * Add a recipient (same schema as Phase 5).
  * @param {import('better-sqlite3').Database} db
- * @param {{ email: string, display_name?: string | null }} data
+ * @param {{ email: string, display_name?: string | null, role_department?: string | null }} data
  */
 export function addRecipient(db, data) {
   const now = new Date().toISOString();
   db.prepare(
-    `INSERT INTO ${RECIPIENTS_TABLE} (email, display_name, active, created_at, updated_at)
-     VALUES (?, ?, 1, ?, ?)
-     ON CONFLICT(email) DO UPDATE SET display_name = excluded.display_name, active = 1, updated_at = excluded.updated_at`
-  ).run(data.email, data.display_name ?? null, now, now);
+    `INSERT INTO ${RECIPIENTS_TABLE} (email, display_name, role_department, active, created_at, updated_at)
+     VALUES (?, ?, ?, 1, ?, ?)
+     ON CONFLICT(email) DO UPDATE SET display_name = excluded.display_name, role_department = excluded.role_department, active = 1, updated_at = excluded.updated_at`
+  ).run(data.email, data.display_name ?? null, data.role_department ?? null, now, now);
 }
 
 /**
@@ -126,14 +126,14 @@ export function addRecipient(db, data) {
  * @param {number} id
  */
 export function getRecipientById(db, id) {
-  return db.prepare(`SELECT id, email, display_name, active, created_at, updated_at FROM ${RECIPIENTS_TABLE} WHERE id = ?`).get(id);
+  return db.prepare(`SELECT id, email, display_name, role_department, active, created_at, updated_at FROM ${RECIPIENTS_TABLE} WHERE id = ?`).get(id);
 }
 
 /**
- * Update recipient email and/or display_name.
+ * Update recipient email, display_name, and/or role_department.
  * @param {import('better-sqlite3').Database} db
  * @param {number} id
- * @param {{ email?: string, display_name?: string | null }} data
+ * @param {{ email?: string, display_name?: string | null, role_department?: string | null }} data
  */
 export function updateRecipient(db, id, data) {
   const now = new Date().toISOString();
@@ -141,9 +141,10 @@ export function updateRecipient(db, id, data) {
   if (!existing) return false;
   const email = data.email !== undefined ? data.email : existing.email;
   const display_name = data.display_name !== undefined ? data.display_name : existing.display_name;
+  const role_department = data.role_department !== undefined ? data.role_department : existing.role_department;
   db.prepare(
-    `UPDATE ${RECIPIENTS_TABLE} SET email = ?, display_name = ?, updated_at = ? WHERE id = ?`
-  ).run(email, display_name, now, id);
+    `UPDATE ${RECIPIENTS_TABLE} SET email = ?, display_name = ?, role_department = ?, updated_at = ? WHERE id = ?`
+  ).run(email, display_name, role_department, now, id);
   return true;
 }
 
