@@ -13,6 +13,7 @@ st.set_page_config(
     layout="wide",
 )
 
+import contextlib
 from datetime import datetime
 from pathlib import Path
 
@@ -78,17 +79,55 @@ def inject_custom_css():
             text-decoration: none !important;
             pointer-events: none;
         }
+        /* Row density for Recipients and Weekly email delivery only. Scoped to
+           per-row/header keyed containers so the "Report content" preview box
+           and edit-recipient form (separate containers, not matched by these
+           prefixes) keep their existing padding untouched. */
+        [class*="st-key-recipients_row_"] div[data-testid="stVerticalBlock"],
+        [class*="st-key-delivery_row_"] div[data-testid="stVerticalBlock"],
+        .st-key-recipients_header div[data-testid="stVerticalBlock"],
+        .st-key-delivery_header div[data-testid="stVerticalBlock"] {
+            gap: 0.1rem !important;
+        }
+        [class*="st-key-recipients_row_"] [data-testid="stMarkdownContainer"] p,
+        [class*="st-key-delivery_row_"] [data-testid="stMarkdownContainer"] p,
+        [class*="st-key-recipients_row_"] [data-testid="stMarkdownContainer"],
+        [class*="st-key-delivery_row_"] [data-testid="stMarkdownContainer"] {
+            margin: 0 !important;
+        }
+        [class*="st-key-recipients_row_"] .stButton button,
+        [class*="st-key-delivery_row_"] .stButton button {
+            padding-top: 0.15rem !important;
+            padding-bottom: 0.15rem !important;
+            min-height: unset !important;
+        }
+        [class*="st-key-recipients_row_"] div[data-testid="stColumn"],
+        [class*="st-key-delivery_row_"] div[data-testid="stColumn"],
+        .st-key-recipients_header div[data-testid="stColumn"],
+        .st-key-delivery_header div[data-testid="stColumn"] {
+            display: flex;
+            align-items: center;
+        }
+        [class*="st-key-recipients_divider_"] hr,
+        [class*="st-key-delivery_divider_"] hr {
+            margin: 0.15rem 0 !important;
+        }
+        .st-key-recipients_header hr,
+        .st-key-delivery_header hr {
+            margin: 0.15rem 0 8px !important;
+        }
         </style>
         """,
         unsafe_allow_html=True,
     )
 
-def render_table_header(widths, labels):
-    cols = st.columns(widths)
-    for col, label in zip(cols, labels):
-        if label:
-            col.markdown(f"<span style='color:#8b8f98; font-size:0.82em; font-weight:600;'>{label}</span>", unsafe_allow_html=True)
-    st.markdown("<hr style='margin:4px 0 8px;'>", unsafe_allow_html=True)
+def render_table_header(widths, labels, key=None):
+    with st.container(key=key) if key else contextlib.nullcontext():
+        cols = st.columns(widths)
+        for col, label in zip(cols, labels):
+            if label:
+                col.markdown(f"<span style='color:#8b8f98; font-size:0.82em; font-weight:600;'>{label}</span>", unsafe_allow_html=True)
+        st.markdown("<hr style='margin:4px 0 8px;'>", unsafe_allow_html=True)
 
 ROLE_OPTIONS = ["Product", "Marketing", "Sales", "Support", "Leadership", "Other"]
 ROLE_PLACEHOLDER = "— Select —"
@@ -189,27 +228,29 @@ def render_delivery_table(rows, fetch_report_fn=None):
         return f"<span style='color:{color}; font-weight:600'>{value}</span>"
 
     widths = [1.7, 1.1, 0.7, 0.7, 0.8, 1.7, 1.2]
-    render_table_header(widths, ["Week", "Generated", "Sent", "Failed", "Pending", "Run ID", ""])
+    render_table_header(widths, ["Week", "Generated", "Sent", "Failed", "Pending", "Run ID", ""], key="delivery_header")
 
     for row in rows:
         report_id = row.get("_report_id")
-        cols = st.columns(widths)
-        cols[0].write(row["Week"])
-        cols[1].write(row["Generated"])
-        cols[2].markdown(colored(row["Sent"], "#1a7f37", "#8b8f98"), unsafe_allow_html=True)
-        cols[3].markdown(colored(row["Failed"], "#cf222e", "#8b8f98"), unsafe_allow_html=True)
-        cols[4].markdown(f"<span style='color:#8b8f98'>{row['Pending']}</span>", unsafe_allow_html=True)
-        cols[5].markdown(f"<span style='color:#8b8f98; font-size:0.82em'>{row['Run ID']}</span>", unsafe_allow_html=True)
-        toggle_key = f"view_report_{report_id}"
-        with cols[6]:
-            with st.container(key=f"view_report_wrap_{report_id or id(row)}"):
-                # Static label by design: Streamlit renders a button's label from
-                # state as of the START of this run, so a label that flips based
-                # on st.session_state set moments earlier in the same run would
-                # display one interaction behind (looks "stuck" after opening).
-                # The explicit Close button below the content avoids that trap.
-                if st.button("View report", key=f"btn_{toggle_key}", type="tertiary", disabled=not report_id):
-                    st.session_state[toggle_key] = not st.session_state.get(toggle_key, False)
+        row_key = f"delivery_row_{report_id or id(row)}"
+        with st.container(key=row_key):
+            cols = st.columns(widths)
+            cols[0].write(row["Week"])
+            cols[1].write(row["Generated"])
+            cols[2].markdown(colored(row["Sent"], "#1a7f37", "#8b8f98"), unsafe_allow_html=True)
+            cols[3].markdown(colored(row["Failed"], "#cf222e", "#8b8f98"), unsafe_allow_html=True)
+            cols[4].markdown(f"<span style='color:#8b8f98'>{row['Pending']}</span>", unsafe_allow_html=True)
+            cols[5].markdown(f"<span style='color:#8b8f98; font-size:0.82em'>{row['Run ID']}</span>", unsafe_allow_html=True)
+            toggle_key = f"view_report_{report_id}"
+            with cols[6]:
+                with st.container(key=f"view_report_wrap_{report_id or id(row)}"):
+                    # Static label by design: Streamlit renders a button's label from
+                    # state as of the START of this run, so a label that flips based
+                    # on st.session_state set moments earlier in the same run would
+                    # display one interaction behind (looks "stuck" after opening).
+                    # The explicit Close button below the content avoids that trap.
+                    if st.button("View report", key=f"btn_{toggle_key}", type="tertiary", disabled=not report_id):
+                        st.session_state[toggle_key] = not st.session_state.get(toggle_key, False)
         if report_id and st.session_state.get(toggle_key):
             with st.container(border=True):
                 content, source = fetch_report_fn(report_id, row.get("_storage_path")) if fetch_report_fn else (None, None)
@@ -228,7 +269,8 @@ def render_delivery_table(rows, fetch_report_fn=None):
                         "when DATABASE_URL (shared hosted DB) is set; otherwise it relies on the local report "
                         "file, which may no longer exist."
                     )
-        st.divider()
+        with st.container(key=f"delivery_divider_{report_id or id(row)}"):
+            st.divider()
 
 def get_db_path():
     return pipeline_config.DB_PATH
@@ -309,32 +351,33 @@ def main():
             st.divider()
         else:
             recipient_widths = [2, 1.5, 1.3, 0.75, 0.75]
-            render_table_header(recipient_widths, ["Email", "Display Name", "Role / Department", "", ""])
+            render_table_header(recipient_widths, ["Email", "Display Name", "Role / Department", "", ""], key="recipients_header")
             for r in active:
                 rid, email, display_name = r.get("id"), r.get("email", ""), r.get("display_name") or ""
                 role_department = r.get("role_department") or ""
                 edit_key = f"edit_open_{rid}"
                 if edit_key not in st.session_state:
                     st.session_state[edit_key] = False
-                c1, c2, c3, c4, c5 = st.columns(recipient_widths)
-                with c1: render_plain_text(email)
-                with c2: render_plain_text(display_name)
-                with c3: render_role_badge(role_department)
-                with c4:
-                    if st.button("Edit", key=f"edit_{rid}", type="secondary"):
-                        st.session_state[edit_key] = not st.session_state[edit_key]
-                with c5:
-                    with st.container(key=f"delete_wrap_{rid}"):
-                        if st.button("Delete", key=f"del_{rid}", type="tertiary"):
-                            try:
-                                resp = requests.delete(f"{api_base}/api/recipients/{rid}", timeout=30)
-                                if resp.status_code in (200, 204):
-                                    st.success("Removed.")
-                                    st.rerun()
-                                else:
-                                    st.error(resp.json().get("error", f"HTTP {resp.status_code}"))
-                            except Exception as ex:
-                                st.error(str(ex))
+                with st.container(key=f"recipients_row_{rid}"):
+                    c1, c2, c3, c4, c5 = st.columns(recipient_widths)
+                    with c1: render_plain_text(email)
+                    with c2: render_plain_text(display_name)
+                    with c3: render_role_badge(role_department)
+                    with c4:
+                        if st.button("Edit", key=f"edit_{rid}", type="secondary"):
+                            st.session_state[edit_key] = not st.session_state[edit_key]
+                    with c5:
+                        with st.container(key=f"delete_wrap_{rid}"):
+                            if st.button("Delete", key=f"del_{rid}", type="tertiary"):
+                                try:
+                                    resp = requests.delete(f"{api_base}/api/recipients/{rid}", timeout=30)
+                                    if resp.status_code in (200, 204):
+                                        st.success("Removed.")
+                                        st.rerun()
+                                    else:
+                                        st.error(resp.json().get("error", f"HTTP {resp.status_code}"))
+                                except Exception as ex:
+                                    st.error(str(ex))
                 if st.session_state[edit_key]:
                     with st.container(border=True):
                         new_email = st.text_input("Email", value=email, key=f"edit_email_{rid}")
@@ -357,7 +400,8 @@ def main():
                             if st.button("Cancel", key=f"cancel_edit_{rid}"):
                                 st.session_state[edit_key] = False
                                 st.rerun()
-                st.divider()
+                with st.container(key=f"recipients_divider_{rid}"):
+                    st.divider()
         st.subheader("Weekly email delivery")
         try:
             reports = requests.get(f"{api_base}/api/reports", timeout=30).json() or []
@@ -438,29 +482,30 @@ def main():
         st.divider()
     else:
         recipient_widths = [2, 1.5, 1.3, 0.75, 0.75]
-        render_table_header(recipient_widths, ["Email", "Display Name", "Role / Department", "", ""])
+        render_table_header(recipient_widths, ["Email", "Display Name", "Role / Department", "", ""], key="recipients_header")
         for r in active:
             rid, email, display_name = r.get("id"), r.get("email", ""), r.get("display_name") or ""
             role_department = r.get("role_department") or ""
             edit_key = f"edit_open_{rid}"
             if edit_key not in st.session_state:
                 st.session_state[edit_key] = False
-            c1, c2, c3, c4, c5 = st.columns(recipient_widths)
-            with c1: render_plain_text(email)
-            with c2: render_plain_text(display_name)
-            with c3: render_role_badge(role_department)
-            with c4:
-                if st.button("Edit", key=f"edit_{rid}", type="secondary"):
-                    st.session_state[edit_key] = not st.session_state[edit_key]
-            with c5:
-                with st.container(key=f"delete_wrap_{rid}"):
-                    if st.button("Delete", key=f"del_{rid}", type="tertiary"):
-                        try:
-                            pipeline_db.deactivate_recipient_by_id(conn, rid)
-                            st.success("Removed.")
-                            st.rerun()
-                        except Exception as ex:
-                            st.error(str(ex))
+            with st.container(key=f"recipients_row_{rid}"):
+                c1, c2, c3, c4, c5 = st.columns(recipient_widths)
+                with c1: render_plain_text(email)
+                with c2: render_plain_text(display_name)
+                with c3: render_role_badge(role_department)
+                with c4:
+                    if st.button("Edit", key=f"edit_{rid}", type="secondary"):
+                        st.session_state[edit_key] = not st.session_state[edit_key]
+                with c5:
+                    with st.container(key=f"delete_wrap_{rid}"):
+                        if st.button("Delete", key=f"del_{rid}", type="tertiary"):
+                            try:
+                                pipeline_db.deactivate_recipient_by_id(conn, rid)
+                                st.success("Removed.")
+                                st.rerun()
+                            except Exception as ex:
+                                st.error(str(ex))
             if st.session_state[edit_key]:
                 with st.container(border=True):
                     new_email = st.text_input("Email", value=email, key=f"edit_email_{rid}")
@@ -480,7 +525,8 @@ def main():
                         if st.button("Cancel", key=f"cancel_edit_{rid}"):
                             st.session_state[edit_key] = False
                             st.rerun()
-            st.divider()
+            with st.container(key=f"recipients_divider_{rid}"):
+                st.divider()
 
     # --- Reports and delivery (local DB) ---
     st.subheader("Weekly email delivery")
