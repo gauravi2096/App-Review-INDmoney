@@ -39,13 +39,60 @@ def inject_custom_css():
             color: #8b8f98 !important;
             font-size: 0.85rem;
         }
-        [class*="st-key-delete_wrap_"] button[kind="tertiary"]:hover {
-            color: #cf222e !important;
-            text-decoration: underline;
-        }
         [class*="st-key-view_report_wrap_"] button[kind="tertiary"]:hover {
             color: #4F46E5 !important;
             text-decoration: underline;
+        }
+        /* Edit/Delete icon buttons: the underlying st.button(...) keeps its
+           original label, key, type, and click handler (a pure visual swap);
+           the text is hidden and a masked SVG glyph is painted in its place
+           via ::before, which lets us recolor the same icon per state
+           (neutral for Edit, muted-then-red-on-hover for Delete) with plain
+           CSS instead of shipping two separate icon assets per color. */
+        [class*="st-key-edit_wrap_"] button,
+        [class*="st-key-delete_wrap_"] button {
+            color: transparent !important;
+            font-size: 0 !important;
+            width: 34px !important;
+            min-width: 34px !important;
+            height: 34px !important;
+            min-height: 34px !important;
+            max-height: 34px !important;
+            padding: 0 !important;
+            display: flex !important;
+            align-items: center;
+            justify-content: center;
+        }
+        /* Streamlit lays out a button's own content (icon slot + label) as a
+           flex row; without an explicit flex-basis our pseudo-element gets
+           squeezed to 0 width by that internal layout, especially on
+           kind="secondary" buttons which reserve more space for text. */
+        [class*="st-key-edit_wrap_"] button::before,
+        [class*="st-key-delete_wrap_"] button::before {
+            content: "";
+            flex: 0 0 17px;
+            display: inline-block;
+            width: 17px;
+            height: 17px;
+            -webkit-mask-size: contain;
+            mask-size: contain;
+            -webkit-mask-repeat: no-repeat;
+            mask-repeat: no-repeat;
+            -webkit-mask-position: center;
+            mask-position: center;
+        }
+        [class*="st-key-edit_wrap_"] button::before {
+            background-color: #57606a;
+            -webkit-mask-image: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIGhlaWdodD0iMjRweCIgdmlld0JveD0iMCAtOTYwIDk2MCA5NjAiIHdpZHRoPSIyNHB4IiBmaWxsPSIjZTNlM2UzIj48cGF0aCBkPSJNMjAwLTIwMGg1N2wzOTEtMzkxLTU3LTU3LTM5MSAzOTF2NTdabS04MCA4MHYtMTcwbDUyOC01MjdxMTItMTEgMjYuNS0xN3QzMC41LTZxMTYgMCAzMSA2dDI2IDE4bDU1IDU2cTEyIDExIDE3LjUgMjZ0NS41IDMwcTAgMTYtNS41IDMwLjVUODE3LTY0N0wyOTAtMTIwSDEyMFptNjQwLTU4NC01Ni01NiA1NiA1NlptLTE0MSA4NS0yOC0yOSA1NyA1Ny0yOS0yOFoiLz48L3N2Zz4=");
+            mask-image: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIGhlaWdodD0iMjRweCIgdmlld0JveD0iMCAtOTYwIDk2MCA5NjAiIHdpZHRoPSIyNHB4IiBmaWxsPSIjZTNlM2UzIj48cGF0aCBkPSJNMjAwLTIwMGg1N2wzOTEtMzkxLTU3LTU3LTM5MSAzOTF2NTdabS04MCA4MHYtMTcwbDUyOC01MjdxMTItMTEgMjYuNS0xN3QzMC41LTZxMTYgMCAzMSA2dDI2IDE4bDU1IDU2cTEyIDExIDE3LjUgMjZ0NS41IDMwcTAgMTYtNS41IDMwLjVUODE3LTY0N0wyOTAtMTIwSDEyMFptNjQwLTU4NC01Ni01NiA1NiA1NlptLTE0MSA4NS0yOC0yOSA1NyA1Ny0yOS0yOFoiLz48L3N2Zz4=");
+        }
+        [class*="st-key-delete_wrap_"] button::before {
+            background-color: #8b8f98;
+            -webkit-mask-image: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIGhlaWdodD0iMjRweCIgdmlld0JveD0iMCAtOTYwIDk2MCA5NjAiIHdpZHRoPSIyNHB4IiBmaWxsPSIjZTNlM2UzIj48cGF0aCBkPSJNMjgwLTEyMHEtMzMgMC01Ni41LTIzLjVUMjAwLTIwMHYtNTIwaC00MHYtODBoMjAwdi00MGgyNDB2NDBoMjAwdjgwaC00MHY1MjBxMCAzMy0yMy41IDU2LjVUNjgwLTEyMEgyODBabTQwMC02MDBIMjgwdjUyMGg0MDB2LTUyMFpNMzYwLTI4MGg4MHYtMzYwaC04MHYzNjBabTE2MCAwaDgwdi0zNjBoLTgwdjM2MFpNMjgwLTcyMHY1MjAtNTIwWiIvPjwvc3ZnPg==");
+            mask-image: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIGhlaWdodD0iMjRweCIgdmlld0JveD0iMCAtOTYwIDk2MCA5NjAiIHdpZHRoPSIyNHB4IiBmaWxsPSIjZTNlM2UzIj48cGF0aCBkPSJNMjgwLTEyMHEtMzMgMC01Ni41LTIzLjVUMjAwLTIwMHYtNTIwaC00MHYtODBoMjAwdi00MGgyNDB2NDBoMjAwdjgwaC00MHY1MjBxMCAzMy0yMy41IDU2LjVUNjgwLTEyMEgyODBabTQwMC02MDBIMjgwdjUyMGg0MDB2LTUyMFpNMzYwLTI4MGg4MHYtMzYwaC04MHYzNjBabTE2MCAwaDgwdi0zNjBoLTgwdjM2MFpNMjgwLTcyMHY1MjAtNTIwWiIvPjwvc3ZnPg==");
+        }
+        [class*="st-key-delete_wrap_"] button:hover::before {
+            background-color: #cf222e !important;
         }
         /* Right-align the "Add recipient" CTA within its full-width block.
            Streamlit's container is flex-direction: column, so the horizontal
@@ -107,6 +154,18 @@ def inject_custom_css():
         .st-key-delivery_header div[data-testid="stColumn"] {
             display: flex;
             align-items: center;
+        }
+        /* align-items:center on stColumn only centers its direct child block;
+           that block (stVerticalBlock) still stacks its own content flush to
+           the top, so the actual cell content needs its own centering too.
+           stVerticalBlock is flex-direction: column, so the vertical axis is
+           the main axis here — justify-content, not align-items. */
+        [class*="st-key-recipients_row_"] div[data-testid="stColumn"] > div[data-testid="stVerticalBlock"],
+        [class*="st-key-delivery_row_"] div[data-testid="stColumn"] > div[data-testid="stVerticalBlock"],
+        .st-key-recipients_header div[data-testid="stColumn"] > div[data-testid="stVerticalBlock"],
+        .st-key-delivery_header div[data-testid="stColumn"] > div[data-testid="stVerticalBlock"] {
+            display: flex;
+            justify-content: center;
         }
         [class*="st-key-recipients_divider_"] hr,
         [class*="st-key-delivery_divider_"] hr {
@@ -364,11 +423,12 @@ def main():
                     with c2: render_plain_text(display_name)
                     with c3: render_role_badge(role_department)
                     with c4:
-                        if st.button("Edit", key=f"edit_{rid}", type="secondary"):
-                            st.session_state[edit_key] = not st.session_state[edit_key]
+                        with st.container(key=f"edit_wrap_{rid}"):
+                            if st.button("Edit", key=f"edit_{rid}", type="secondary", help="Edit"):
+                                st.session_state[edit_key] = not st.session_state[edit_key]
                     with c5:
                         with st.container(key=f"delete_wrap_{rid}"):
-                            if st.button("Delete", key=f"del_{rid}", type="tertiary"):
+                            if st.button("Delete", key=f"del_{rid}", type="tertiary", help="Delete"):
                                 try:
                                     resp = requests.delete(f"{api_base}/api/recipients/{rid}", timeout=30)
                                     if resp.status_code in (200, 204):
@@ -495,11 +555,12 @@ def main():
                 with c2: render_plain_text(display_name)
                 with c3: render_role_badge(role_department)
                 with c4:
-                    if st.button("Edit", key=f"edit_{rid}", type="secondary"):
-                        st.session_state[edit_key] = not st.session_state[edit_key]
+                    with st.container(key=f"edit_wrap_{rid}"):
+                        if st.button("Edit", key=f"edit_{rid}", type="secondary", help="Edit"):
+                            st.session_state[edit_key] = not st.session_state[edit_key]
                 with c5:
                     with st.container(key=f"delete_wrap_{rid}"):
-                        if st.button("Delete", key=f"del_{rid}", type="tertiary"):
+                        if st.button("Delete", key=f"del_{rid}", type="tertiary", help="Delete"):
                             try:
                                 pipeline_db.deactivate_recipient_by_id(conn, rid)
                                 st.success("Removed.")
