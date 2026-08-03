@@ -44,11 +44,12 @@ def inject_custom_css():
             text-decoration: underline;
         }
         /* Edit/Delete icon buttons: the underlying st.button(...) keeps its
-           original label, key, type, and click handler (a pure visual swap);
-           the text is hidden and a masked SVG glyph is painted in its place
-           via ::before, which lets us recolor the same icon per state
-           (neutral for Edit, muted-then-red-on-hover for Delete) with plain
-           CSS instead of shipping two separate icon assets per color. */
+           original label, key, and click handler (a pure visual swap); both
+           use type="tertiary" (borderless) so Edit matches Delete's weight
+           exactly. The text is hidden and a masked SVG glyph is painted in
+           its place via ::before, which lets us recolor the same icon per
+           state (neutral for Edit, muted-then-red-on-hover for Delete) with
+           plain CSS instead of shipping two separate icon assets per color. */
         [class*="st-key-edit_wrap_"] button,
         [class*="st-key-delete_wrap_"] button {
             color: transparent !important;
@@ -65,8 +66,7 @@ def inject_custom_css():
         }
         /* Streamlit lays out a button's own content (icon slot + label) as a
            flex row; without an explicit flex-basis our pseudo-element gets
-           squeezed to 0 width by that internal layout, especially on
-           kind="secondary" buttons which reserve more space for text. */
+           squeezed to 0 width by that internal layout. */
         [class*="st-key-edit_wrap_"] button::before,
         [class*="st-key-delete_wrap_"] button::before {
             content: "";
@@ -225,8 +225,8 @@ def render_role_badge(role_department):
         st.caption("—")
         return
     st.markdown(
-        f'<span style="background:#EEF0FF;color:#4F46E5;border-radius:999px;'
-        f'padding:2px 10px;font-size:0.78rem;font-weight:600;white-space:nowrap;">{role_department}</span>',
+        f'<span style="display:inline-flex;align-items:center;background:#EEF0FF;color:#4F46E5;'
+        f'border-radius:999px;padding:2px 10px;font-size:0.78rem;font-weight:600;white-space:nowrap;">{role_department}</span>',
         unsafe_allow_html=True,
     )
 
@@ -409,8 +409,8 @@ def main():
             st.info("No active recipients. Add one above.")
             st.divider()
         else:
-            recipient_widths = [2, 1.5, 1.3, 0.75, 0.75]
-            render_table_header(recipient_widths, ["Email", "Display Name", "Role / Department", "", ""], key="recipients_header")
+            recipient_widths = [1.5, 1.3, 2, 0.75, 0.75]
+            render_table_header(recipient_widths, ["Display Name", "Role / Department", "Email", "", ""], key="recipients_header")
             for r in active:
                 rid, email, display_name = r.get("id"), r.get("email", ""), r.get("display_name") or ""
                 role_department = r.get("role_department") or ""
@@ -419,12 +419,12 @@ def main():
                     st.session_state[edit_key] = False
                 with st.container(key=f"recipients_row_{rid}"):
                     c1, c2, c3, c4, c5 = st.columns(recipient_widths)
-                    with c1: render_plain_text(email)
-                    with c2: render_plain_text(display_name)
-                    with c3: render_role_badge(role_department)
+                    with c1: render_plain_text(display_name)
+                    with c2: render_role_badge(role_department)
+                    with c3: render_plain_text(email)
                     with c4:
                         with st.container(key=f"edit_wrap_{rid}"):
-                            if st.button("Edit", key=f"edit_{rid}", type="secondary", help="Edit"):
+                            if st.button("Edit", key=f"edit_{rid}", type="tertiary", help="Edit"):
                                 st.session_state[edit_key] = not st.session_state[edit_key]
                     with c5:
                         with st.container(key=f"delete_wrap_{rid}"):
@@ -541,8 +541,8 @@ def main():
         st.info("No active recipients. Add one above.")
         st.divider()
     else:
-        recipient_widths = [2, 1.5, 1.3, 0.75, 0.75]
-        render_table_header(recipient_widths, ["Email", "Display Name", "Role / Department", "", ""], key="recipients_header")
+        recipient_widths = [1.5, 1.3, 2, 0.75, 0.75]
+        render_table_header(recipient_widths, ["Display Name", "Role / Department", "Email", "", ""], key="recipients_header")
         for r in active:
             rid, email, display_name = r.get("id"), r.get("email", ""), r.get("display_name") or ""
             role_department = r.get("role_department") or ""
@@ -551,12 +551,12 @@ def main():
                 st.session_state[edit_key] = False
             with st.container(key=f"recipients_row_{rid}"):
                 c1, c2, c3, c4, c5 = st.columns(recipient_widths)
-                with c1: render_plain_text(email)
-                with c2: render_plain_text(display_name)
-                with c3: render_role_badge(role_department)
+                with c1: render_plain_text(display_name)
+                with c2: render_role_badge(role_department)
+                with c3: render_plain_text(email)
                 with c4:
                     with st.container(key=f"edit_wrap_{rid}"):
-                        if st.button("Edit", key=f"edit_{rid}", type="secondary", help="Edit"):
+                        if st.button("Edit", key=f"edit_{rid}", type="tertiary", help="Edit"):
                             st.session_state[edit_key] = not st.session_state[edit_key]
                 with c5:
                     with st.container(key=f"delete_wrap_{rid}"):
