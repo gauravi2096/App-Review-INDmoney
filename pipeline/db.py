@@ -520,6 +520,20 @@ def add_recipient(
     conn.commit()
 
 
+def ensure_recipient_exists(conn, email: str) -> None:
+    """Insert a recipient only if the email doesn't already exist; never touches display_name/
+    role_department on an existing row. For CI/seed paths only — the UI "Add recipient" flow
+    should keep using add_recipient(), which intentionally upserts."""
+    from datetime import datetime
+    now = datetime.utcnow().isoformat() + "Z"
+    conn.execute(
+        """INSERT INTO recipients (email, display_name, role_department, active, created_at, updated_at) VALUES (?,?,?,1,?,?)
+           ON CONFLICT(email) DO NOTHING""",
+        (email, None, None, now, now),
+    )
+    conn.commit()
+
+
 def get_recipient_by_id(conn, id: int) -> Optional[dict]:
     row = conn.execute(
         "SELECT id, email, display_name, role_department, active, created_at, updated_at FROM recipients WHERE id = ?", (id,)

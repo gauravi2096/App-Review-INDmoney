@@ -576,10 +576,13 @@ def main():
                     with ec1:
                         if st.button("Save", key=f"save_{rid}", type="primary"):
                             try:
-                                pipeline_db.update_recipient(conn, rid, email=new_email.strip(), display_name=new_name.strip() or None, role_department=new_role or "")
-                                st.session_state[edit_key] = False
-                                st.success("Updated.")
-                                st.rerun()
+                                ok = pipeline_db.update_recipient(conn, rid, email=new_email.strip(), display_name=new_name.strip() or None, role_department=new_role or "")
+                                if ok:
+                                    st.session_state[edit_key] = False
+                                    st.success("Updated.")
+                                    st.rerun()
+                                else:
+                                    st.error(f"Update failed: no recipient found with id {rid}. Refresh and try again.")
                             except Exception as ex:
                                 st.error(str(ex))
                     with ec2:

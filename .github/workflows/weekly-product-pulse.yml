@@ -1,7 +1,7 @@
 # Product Pulse: run the Python pipeline daily at 10:00 AM IST.
 # Uses a shared hosted DB (Postgres): set DATABASE_URL in repo Secrets so recipients
 # added in the Streamlit UI are used by this run. Required secrets: DATABASE_URL,
-# GROQ_API_KEY, GEMINI_API_KEY, P5_* SMTP. Optional: RECIPIENT_EMAILS.
+# GROQ_API_KEY, GEMINI_API_KEY, P5_* SMTP, TEST_RECIPIENT_EMAIL. Optional: RECIPIENT_EMAILS.
 
 name: Weekly Product Pulse
 
@@ -59,7 +59,7 @@ jobs:
           # You can override/add others by setting the optional RECIPIENT_EMAILS secret.
           RECIPIENT_EMAILS: ${{ secrets.RECIPIENT_EMAILS }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          TEST_RECIPIENT_EMAIL: "gauravichavan20@gmail.com"
+          TEST_RECIPIENT_EMAIL: ${{ secrets.TEST_RECIPIENT_EMAIL }}
         run: |
           python -c "
           import os
@@ -76,7 +76,9 @@ jobs:
               conn = db.get_connection()
               for email in emails:
                   try:
-                      db.add_recipient(conn, email, None)
+                      # ensure_recipient_exists only inserts if missing; it never overwrites
+                      # display_name/role_department a recipient already has (unlike add_recipient's upsert).
+                      db.ensure_recipient_exists(conn, email)
                   except Exception:
                       pass
               conn.close()
@@ -104,7 +106,7 @@ jobs:
       - name: Verify email sent to test recipient
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          TEST_RECIPIENT_EMAIL: "gauravichavan20@gmail.com"
+          TEST_RECIPIENT_EMAIL: ${{ secrets.TEST_RECIPIENT_EMAIL }}
         run: |
           python -c "
           import os, sys
