@@ -32,7 +32,7 @@ Each theme ships with a short description, a couple of representative quotes pul
 **Report period.** Fixed rolling lookback window measured from wall-clock execution time — not anchored to the previous run. Default 12 weeks, configurable via `P1_DATE_WINDOW_WEEKS`. A skipped or delayed run doesn't trigger catch-up logic; the next run just looks back the same window from its own execution time.
 
 **Model mapping.**
-- Phase 3 (theme analysis) uses **Groq** (`llama-3.1-8b-instant`) — many calls per run, one per review batch.
+- Phase 3 (theme analysis) uses **Groq** (`openai/gpt-oss-20b`) — many calls per run, one per review batch.
 - Phase 4 (report composition) uses **Gemini** (`gemini-2.0-flash`) — a single call per run.
 - Phase 2 (cleaning) is regex-based normalization and PII redaction — no LLM call.
 - Phase 5 (email) is pure SMTP — no LLM call.

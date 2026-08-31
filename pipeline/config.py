@@ -29,7 +29,7 @@ MAX_RETRIES = int(os.environ.get("P1_MAX_RETRIES", "3"))
 
 # P3
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
-GROQ_MODEL = os.environ.get("P3_GROQ_MODEL", "llama-3.1-8b-instant")
+GROQ_MODEL = os.environ.get("P3_GROQ_MODEL", "openai/gpt-oss-20b")
 BATCH_TOKEN_LIMIT = int(os.environ.get("P3_BATCH_TOKEN_LIMIT", "4000"))
 BATCH_DELAY_MS = int(os.environ.get("P3_BATCH_DELAY_MS", "15000"))
 
