@@ -16,9 +16,9 @@ def _date_in_window(iso_date: str, weeks: int) -> bool:
     except Exception:
         return False
 
-def run(db_path: str | None = None) -> dict:
+def run(db_path: str | None = None, run_id: str | None = None) -> dict:
     db_path = db_path or config.DB_PATH
-    run_id = _run_id()
+    run_id = run_id or _run_id()
     try:
         from google_play_scraper import Sort, reviews
     except ImportError:

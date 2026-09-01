@@ -156,6 +156,16 @@ def _init_schema_sqlite(conn: sqlite3.Connection) -> None:
         error_message TEXT,
         PRIMARY KEY (report_id, recipient_email)
     );
+
+    CREATE TABLE IF NOT EXISTS pipeline_runs (
+        run_id TEXT PRIMARY KEY,
+        status TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        finished_at TEXT,
+        failed_phase TEXT,
+        error_message TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_pipeline_runs_started_at ON pipeline_runs(started_at);
     """)
     try:
         conn.execute("ALTER TABLE report_metadata ADD COLUMN body_html TEXT")
@@ -243,6 +253,16 @@ def _init_schema_pg(conn: "PgConnection") -> None:
         error_message TEXT,
         PRIMARY KEY (report_id, recipient_email)
     );
+
+    CREATE TABLE IF NOT EXISTS pipeline_runs (
+        run_id TEXT PRIMARY KEY,
+        status TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        finished_at TEXT,
+        failed_phase TEXT,
+        error_message TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_pipeline_runs_started_at ON pipeline_runs(started_at);
     ALTER TABLE recipients ADD COLUMN IF NOT EXISTS role_department TEXT;
     ALTER TABLE analysis ADD COLUMN IF NOT EXISTS analysis_fallback_used INTEGER NOT NULL DEFAULT 0;
     ALTER TABLE report_metadata ADD COLUMN IF NOT EXISTS report_fallback_used INTEGER NOT NULL DEFAULT 0;
@@ -590,6 +610,47 @@ def deactivate_recipient_by_id(conn, id: int) -> bool:
     cur = conn.execute("UPDATE recipients SET active=0, updated_at=? WHERE id=?", (now, id))
     conn.commit()
     return getattr(cur, "rowcount", 0) if cur else 0
+
+
+def create_pipeline_run(conn, run_id: str) -> None:
+    from datetime import datetime
+    now = datetime.utcnow().isoformat() + "Z"
+    conn.execute(
+        "INSERT INTO pipeline_runs (run_id, status, started_at) VALUES (?, 'running', ?)",
+        (run_id, now),
+    )
+    conn.commit()
+
+
+def update_pipeline_run(
+    conn,
+    run_id: str,
+    status: str,
+    failed_phase: Optional[str] = None,
+    error_message: Optional[str] = None,
+) -> None:
+    from datetime import datetime
+    now = datetime.utcnow().isoformat() + "Z"
+    conn.execute(
+        "UPDATE pipeline_runs SET status=?, finished_at=?, failed_phase=?, error_message=? WHERE run_id=?",
+        (status, now, failed_phase, error_message, run_id),
+    )
+    conn.commit()
+
+
+def list_pipeline_runs(conn) -> list[dict]:
+    rows = conn.execute(
+        "SELECT run_id, status, started_at, finished_at, failed_phase, error_message FROM pipeline_runs ORDER BY started_at DESC"
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_pipeline_run(conn, run_id: str) -> Optional[dict]:
+    row = conn.execute(
+        "SELECT run_id, status, started_at, finished_at, failed_phase, error_message FROM pipeline_runs WHERE run_id = ?",
+        (run_id,),
+    ).fetchone()
+    return dict(row) if row else None
 
 
 def list_reports(conn) -> list[dict]:

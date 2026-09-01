@@ -3,6 +3,7 @@ INDmoney Review Pulse – Streamlit app.
 Runs all phases (P1–P6) in one deployment: manage recipients, trigger pipeline, view reports and delivery.
 Uses local SQLite and Python pipeline by default. Optional: connect to Phase 6 API instead (sidebar).
 """
+import html
 import os
 import streamlit as st
 
@@ -230,6 +231,20 @@ def render_role_badge(role_department):
         unsafe_allow_html=True,
     )
 
+def render_run_status_badge(status, failed_phase=None, error_message=None):
+    pill = "display:inline-flex;align-items:center;border-radius:999px;padding:2px 10px;font-size:0.78rem;font-weight:600;white-space:nowrap;"
+    if status == "success":
+        return f'<span style="{pill}background:#DAFBE1;color:#1a7f37;">Success</span>'
+    if status == "success_with_fallback":
+        detail = "Analysis or report used the deterministic fallback instead of full LLM output."
+        return f'<span title="{html.escape(detail)}" style="{pill}background:#FFF3CD;color:#9A6700;cursor:help;">Fallback used</span>'
+    if status == "failed":
+        detail = f"{failed_phase or 'Unknown phase'}: {error_message or 'No details available'}"
+        return f'<span title="{html.escape(detail)}" style="{pill}background:#FFEBE9;color:#cf222e;cursor:help;">Failed</span>'
+    if status == "running":
+        return f'<span style="{pill}background:#EEF0FF;color:#4F46E5;">Running…</span>'
+    return "<span style='color:#8b8f98'>—</span>"
+
 def week_label(week_start_date, generated_at):
     src = week_start_date or generated_at
     if not src:
@@ -279,6 +294,8 @@ def render_delivery_table(rows, fetch_report_fn=None):
         return
 
     def colored(value, color_on, color_off):
+        if value is None:
+            return "<span style='color:#8b8f98'>—</span>"
         try:
             n = int(value)
         except Exception:
@@ -286,30 +303,36 @@ def render_delivery_table(rows, fetch_report_fn=None):
         color = color_on if n > 0 else color_off
         return f"<span style='color:{color}; font-weight:600'>{value}</span>"
 
-    widths = [1.7, 1.1, 0.7, 0.7, 0.8, 1.7, 1.2]
-    render_table_header(widths, ["Week", "Generated", "Sent", "Failed", "Pending", "Run ID", ""], key="delivery_header")
+    widths = [1.6, 1.0, 1.3, 0.7, 0.7, 1.2]
+    render_table_header(widths, ["Week", "Generated", "Status", "Sent", "Failed", ""], key="delivery_header")
 
     for row in rows:
         report_id = row.get("_report_id")
-        row_key = f"delivery_row_{report_id or id(row)}"
+        run_key = row.get("_run_id") or report_id or id(row)
+        row_key = f"delivery_row_{run_key}"
         with st.container(key=row_key):
             cols = st.columns(widths)
             cols[0].write(row["Week"])
             cols[1].write(row["Generated"])
-            cols[2].markdown(colored(row["Sent"], "#1a7f37", "#8b8f98"), unsafe_allow_html=True)
-            cols[3].markdown(colored(row["Failed"], "#cf222e", "#8b8f98"), unsafe_allow_html=True)
-            cols[4].markdown(f"<span style='color:#8b8f98'>{row['Pending']}</span>", unsafe_allow_html=True)
-            cols[5].markdown(f"<span style='color:#8b8f98; font-size:0.82em'>{row['Run ID']}</span>", unsafe_allow_html=True)
-            toggle_key = f"view_report_{report_id}"
-            with cols[6]:
-                with st.container(key=f"view_report_wrap_{report_id or id(row)}"):
-                    # Static label by design: Streamlit renders a button's label from
-                    # state as of the START of this run, so a label that flips based
-                    # on st.session_state set moments earlier in the same run would
-                    # display one interaction behind (looks "stuck" after opening).
-                    # The explicit Close button below the content avoids that trap.
-                    if st.button("View report", key=f"btn_{toggle_key}", type="tertiary", disabled=not report_id):
-                        st.session_state[toggle_key] = not st.session_state.get(toggle_key, False)
+            cols[2].markdown(
+                render_run_status_badge(row.get("Status", "success"), row.get("FailedPhase"), row.get("ErrorMessage")),
+                unsafe_allow_html=True,
+            )
+            cols[3].markdown(colored(row["Sent"], "#1a7f37", "#8b8f98"), unsafe_allow_html=True)
+            cols[4].markdown(colored(row["Failed"], "#cf222e", "#8b8f98"), unsafe_allow_html=True)
+            toggle_key = f"view_report_{run_key}"
+            with cols[5]:
+                with st.container(key=f"view_report_wrap_{run_key}"):
+                    if report_id:
+                        # Static label by design: Streamlit renders a button's label from
+                        # state as of the START of this run, so a label that flips based
+                        # on st.session_state set moments earlier in the same run would
+                        # display one interaction behind (looks "stuck" after opening).
+                        # The explicit Close button below the content avoids that trap.
+                        if st.button("View report", key=f"btn_{toggle_key}", type="tertiary"):
+                            st.session_state[toggle_key] = not st.session_state.get(toggle_key, False)
+                    else:
+                        st.caption("No report generated")
         if report_id and st.session_state.get(toggle_key):
             with st.container(border=True):
                 content, source = fetch_report_fn(report_id, row.get("_storage_path")) if fetch_report_fn else (None, None)
@@ -317,7 +340,7 @@ def render_delivery_table(rows, fetch_report_fn=None):
                     hcol, ccol = st.columns([5, 1])
                     hcol.caption(f"Report content for {report_id} (source: {source})")
                     with ccol:
-                        with st.container(key=f"view_report_wrap_close_{report_id or id(row)}"):
+                        with st.container(key=f"view_report_wrap_close_{run_key}"):
                             if st.button("Close", key=f"close_{toggle_key}", type="tertiary"):
                                 st.session_state[toggle_key] = False
                                 st.rerun()
@@ -328,7 +351,7 @@ def render_delivery_table(rows, fetch_report_fn=None):
                         "when DATABASE_URL (shared hosted DB) is set; otherwise it relies on the local report "
                         "file, which may no longer exist."
                     )
-        with st.container(key=f"delivery_divider_{report_id or id(row)}"):
+        with st.container(key=f"delivery_divider_{run_key}"):
             st.divider()
 
 def get_db_path():
@@ -467,15 +490,16 @@ def main():
             reports = requests.get(f"{api_base}/api/reports", timeout=30).json() or []
         except Exception:
             reports = []
+        # Phase 6 (Node) has no pipeline_runs equivalent, so failed-before-report runs aren't
+        # visible here and Status always renders as "success" via render_delivery_table's default.
         rows = [
             {
                 "Week": week_label(r.get("week_start_date"), r.get("generated_at")),
                 "Generated": (r.get("generated_at") or "–")[:10],
                 "Sent": (r.get("delivery_summary") or {}).get("sent", 0),
                 "Failed": (r.get("delivery_summary") or {}).get("failed", 0),
-                "Pending": (r.get("delivery_summary") or {}).get("not_sent", 0),
-                "Run ID": r.get("report_id") or r.get("week_start_date", "–"),
                 "_report_id": r.get("report_id"),
+                "_run_id": r.get("report_id"),
                 "_storage_path": r.get("storage_artifact_path"),
             }
             for r in reports
@@ -594,25 +618,42 @@ def main():
 
     # --- Reports and delivery (local DB) ---
     st.subheader("Weekly email delivery")
-    st.caption("Per report: sent, failed, and pending (not yet sent) counts.")
-    reports = pipeline_db.list_reports(conn)
+    st.caption("Every pipeline run, including ones that failed before any email was sent.")
+    runs = pipeline_db.list_pipeline_runs(conn)
+    reports_by_run = {r["run_id"]: r for r in pipeline_db.list_reports(conn)}
     summary_map = pipeline_db.get_delivery_summary_per_report(conn)
-    if not reports:
-        st.info("No reports yet. Run the pipeline from the sidebar.")
+    if not runs:
+        st.info("No pipeline runs yet. Run the pipeline from the sidebar.")
     else:
         rows = []
-        for r in reports:
-            rid = r.get("report_id")
-            summary = summary_map.get(rid, {"sent": 0, "failed": 0, "not_sent": 0})
+        for run in runs:
+            run_id = run["run_id"]
+            report = reports_by_run.get(run_id)
+            if report:
+                rid = report.get("report_id")
+                summary = summary_map.get(rid, {"sent": 0, "failed": 0, "not_sent": 0})
+                week = week_label(report.get("week_start_date"), report.get("generated_at"))
+                generated = (report.get("generated_at") or "–")[:10]
+                sent, failed = summary["sent"], summary["failed"]
+                storage_path = report.get("storage_artifact_path")
+            else:
+                # Run never reached Phase 4 (failed earlier, or is still running) — no report to join.
+                rid = None
+                week = week_label(None, run.get("started_at"))
+                generated = (run.get("started_at") or "–")[:10]
+                sent, failed = None, None
+                storage_path = None
             rows.append({
-                "Week": week_label(r.get("week_start_date"), r.get("generated_at")),
-                "Generated": (r.get("generated_at") or "–")[:10],
-                "Sent": summary["sent"],
-                "Failed": summary["failed"],
-                "Pending": summary["not_sent"],
-                "Run ID": rid or r.get("week_start_date", "–"),
+                "Week": week,
+                "Generated": generated,
+                "Status": run["status"],
+                "FailedPhase": run.get("failed_phase"),
+                "ErrorMessage": run.get("error_message"),
+                "Sent": sent,
+                "Failed": failed,
                 "_report_id": rid,
-                "_storage_path": r.get("storage_artifact_path"),
+                "_run_id": run_id,
+                "_storage_path": storage_path,
             })
         render_delivery_table(rows, fetch_report_fn=lambda rid, sp: fetch_report_local(conn, rid, sp))
 
