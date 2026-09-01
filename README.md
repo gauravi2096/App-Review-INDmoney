@@ -32,12 +32,14 @@ Each theme ships with a short description, a couple of representative quotes pul
 **Report period.** Fixed rolling lookback window measured from wall-clock execution time — not anchored to the previous run. Default 12 weeks, configurable via `P1_DATE_WINDOW_WEEKS`. A skipped or delayed run doesn't trigger catch-up logic; the next run just looks back the same window from its own execution time.
 
 **Model mapping.**
-- Phase 3 (theme analysis) uses **Groq** (`openai/gpt-oss-20b`) — many calls per run, one per review batch.
+- Phase 3 (theme analysis) uses **Groq** (`openai/gpt-oss-20b`) — many calls per run, one per review batch, paced to stay under the model's free-tier TPM ceiling (`P3_BATCH_DELAY_MS`, `P3_GROQ_MAX_TOKENS`; `reasoning_effort: "low"`, since gpt-oss-20b is a reasoning model that can otherwise spend its whole token budget on hidden reasoning tokens before emitting an answer).
 - Phase 4 (report composition) uses **Gemini** (`gemini-2.0-flash`) — a single call per run.
 - Phase 2 (cleaning) is regex-based normalization and PII redaction — no LLM call.
 - Phase 5 (email) is pure SMTP — no LLM call.
 
-**Resilience.** Phase 4 falls back to a deterministic template if Gemini fails, so a report still sends even without the LLM. Phase 3 has no fallback — a Groq failure halts the run before Phase 4 or 5 execute.
+**Resilience.** Both Phase 3 and Phase 4 fall back to deterministic output if their LLM call fails after retries — Phase 3 groups reviews by star rating instead of LLM-derived themes; Phase 4 composes the report from a fixed template instead of Gemini's prose. Either fallback logs the triggering exception and is recorded as a flag on that run's stored analysis/report, so a "successful" run that quietly used a fallback is distinguishable from one that used the real models.
+
+**Run tracking.** Every pipeline run — scheduled, manual, or triggered from Streamlit — writes a row to a `pipeline_runs` table before Phase 1 starts, updated to `success`, `success_with_fallback`, or `failed` (with which phase and why) when it concludes, including on an uncaught exception. The dashboard's delivery table reads this directly, so a run that failed before ever reaching the email step is now visible instead of leaving zero trace. One real limit: a run that fails because the database itself is unreachable can't have a row written to it, by definition — that specific failure mode is only visible in GitHub Actions' own logs, not this table.
 
 ## PM thinking — key decisions
 
@@ -47,14 +49,15 @@ Each theme ships with a short description, a couple of representative quotes pul
 
 **Email as primary delivery, not the dashboard.** *Tension:* the Streamlit app could have been positioned as the place stakeholders check for the report. *What I chose:* email is the primary delivery surface; Streamlit is an admin and exploration tool, not the read surface. *Why:* the entire point of this project is to remove a manual chore — if consuming the output requires someone to remember to open a dashboard, I've just relocated the chore instead of removing it. *Principle:* match the delivery mechanism to the behavior you actually want (passive consumption), not the tooling that's easiest to build.
 
-**Selective resilience, not uniform resilience.** *Tension:* I could build a fallback for every phase to maximize uptime, or accept that some phases are hard dependencies. *What I chose:* Phase 4 falls back to a deterministic template if Gemini fails; Phase 3 has no fallback for Groq. *Why:* Phase 4's fallback is a real, if plainer, report — still honest, still useful. There's no equivalent for Phase 3: a "fallback" theme clustering would mean fabricating themes, which is worse than not sending a report. *Principle:* add resilience where the degraded output is still honest; don't paper over a hard dependency with a weaker approximation just to keep something technically running.
+**Selective resilience, made honest instead of uniform.** *Tension:* I could build a fallback for every phase to maximize uptime, or accept that some phases are hard dependencies. I originally chose the latter for Phase 3: a "fallback" theme clustering would mean fabricating themes, which felt worse than not sending a report. *What changed:* a production incident — Groq deprecated the configured model mid-operation, and the replacement model's free-tier limits then caused a separate pacing failure — made "halt the entire pipeline" too costly to leave as the only option. *What I chose instead:* a Phase 3 fallback that's honest rather than fabricated — grouping reviews by star rating, real data, just not LLM-derived themes — paired with an explicit flag and log line so a fallback-recovered run is never silently indistinguishable from a real one. *Principle:* "don't fabricate output" and "don't have a fallback" aren't actually the same constraint — I'd conflated them the first time. The real rule is: degrade to something still true, and never hide that you degraded.
 
 **Rolling window, not gap-aware.** *Tension:* a simple rolling window from execution time is predictable, but doesn't adjust if a run is skipped or delayed — the next run just looks back the same fixed window from wherever it actually executes. *What I chose:* kept it simple — no catch-up logic. *Why:* the date-range logic staying simple and predictable mattered more than handling the edge case of a missed run, especially at this scale. *Principle:* optimize for the common case explicitly, and document the edge-case tradeoff rather than adding complexity to silently paper over it.
 
 ## Honest limitations
 
 - Theme clustering is LLM judgment, not validated against ground truth — no formal accuracy evaluation has been run yet.
-- Groq (Phase 3) has no fallback path — a failure halts the entire run, unlike Phase 4, which degrades gracefully.
+- Both Phase 3 and Phase 4 now degrade to a deterministic fallback rather than halting, but a run that fails before that point — most concretely, the database itself being unreachable — still can't be recorded anywhere in-app. That gap showed up for real on three separate weeks (Aug 17, 24, 31) and had to be reconstructed manually from GitHub Actions logs afterward, not caught automatically.
+- Phase 4's configured model (`gemini-2.0-flash`) was deprecated by Google after this was built; recent runs have been sending the deterministic fallback report rather than real Gemini output until the model name is updated — caught via the new fallback logging, not by design.
 - Report period doesn't adjust for skipped runs — if a run is delayed, the next one's 12-week window doesn't "catch up," it just looks back 12 weeks from whenever it actually executes.
 - The pipeline was deliberately paused for roughly 15 weeks (mid-April to late July 2026) during portfolio and interview prep. Not a reliability failure, but a visible gap in run history worth being upfront about.
 - Small recipient list (2) — not yet tested at scale.
@@ -65,6 +68,7 @@ Each theme ships with a short description, a couple of representative quotes pul
 1. **Rating-over-time trend.** Average star rating per report period, plotted as an interactive chart in the Streamlit dashboard, with a one-line summary added to the email itself since charts don't render reliably in most email clients. No taxonomy risk here — it's a raw number, not an LLM judgment, so it sidesteps the streetlight-effect tradeoff above entirely.
 2. **A formal eval/validation harness for theme classification accuracy.** Planned as a separate, focused project rather than bolted onto this pipeline — measurement rigor is a distinct skill worth its own case study, not a footnote on this one.
 3. **Competitive benchmarking** against other finance apps (e.g. Zerodha, Wealth Monitor) to distinguish INDmoney-specific issues from industry-wide patterns. Sequenced after the above, since it depends on having a validated theme model to compare against in the first place.
+4. **Proactive failure alerting.** A failed or fallback-recovered run is currently only visible if someone opens the dashboard. A short Slack/email ping whenever a run's status isn't a clean `success` would close that loop — the run-tracking data this needs already exists, so it's mostly wiring, not new instrumentation.
 
 ## Setup
 
@@ -101,5 +105,5 @@ The workflow **`.github/workflows/weekly-product-pulse.yml`** runs the **Python 
 
 **Secrets** (Settings → Secrets and variables → Actions):
 
-- **Required:** `DATABASE_URL` (Postgres connection string), `GROQ_API_KEY`, `GEMINI_API_KEY`, and SMTP: `P5_FROM_ADDRESS`, `P5_SMTP_HOST`, `P5_SMTP_PORT`, `P5_SMTP_SECURE`, `P5_SMTP_USER`, `P5_SMTP_PASS`
+- **Required:** `DATABASE_URL` (Postgres connection string), `GROQ_API_KEY`, `GEMINI_API_KEY`, `TEST_RECIPIENT_EMAIL` (seeded once per run, used by the workflow's end-to-end delivery check), and SMTP: `P5_FROM_ADDRESS`, `P5_SMTP_HOST`, `P5_SMTP_PORT`, `P5_SMTP_SECURE`, `P5_SMTP_USER`, `P5_SMTP_PASS`
 - **Optional:** `RECIPIENT_EMAILS` = comma-separated emails to seed (in addition to recipients you add in the UI).
