@@ -1,5 +1,6 @@
 """Phase 4: Read latest analysis, call Gemini for one-pager, write HTML and report_metadata."""
 import re
+import sys
 import time
 from pathlib import Path
 
@@ -207,10 +208,13 @@ def run(db_path: str | None = None, run_id_arg: str | None = None) -> dict:
         conn.close()
 
     prompt = _build_report_prompt(analysis, config.MAX_WORDS, report_context)
+    fallback_used = False
     try:
         body_text = _gemini_complete_with_retries(prompt)
-    except Exception:
+    except Exception as e:
         # Keep the pipeline operational when Gemini quota is exhausted.
+        print(f"Phase 4 Gemini report generation failed, falling back to deterministic report text: {type(e).__name__}: {e}", file=sys.stderr)
+        fallback_used = True
         body_text = _fallback_report_text(analysis, report_context)
     word_count = _count_words(body_text)
     if word_count > config.MAX_WORDS:
@@ -226,7 +230,7 @@ def run(db_path: str | None = None, run_id_arg: str | None = None) -> dict:
 
     conn = pipeline_db.get_connection(db_path)
     try:
-        pipeline_db.insert_report_metadata(conn, run_id, run_id, week_start, word_count, artifact_path, body_html=body_html)
+        pipeline_db.insert_report_metadata(conn, run_id, run_id, week_start, word_count, artifact_path, body_html=body_html, fallback_used=fallback_used)
     finally:
         conn.close()
-    return {"report_id": run_id, "path": str(storage_path)}
+    return {"report_id": run_id, "path": str(storage_path), "fallback_used": fallback_used}

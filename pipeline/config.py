@@ -31,7 +31,15 @@ MAX_RETRIES = int(os.environ.get("P1_MAX_RETRIES", "3"))
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 GROQ_MODEL = os.environ.get("P3_GROQ_MODEL", "openai/gpt-oss-20b")
 BATCH_TOKEN_LIMIT = int(os.environ.get("P3_BATCH_TOKEN_LIMIT", "4000"))
-BATCH_DELAY_MS = int(os.environ.get("P3_BATCH_DELAY_MS", "15000"))
+# openai/gpt-oss-20b's free tier caps at 8,000 TPM, and Groq's rate limiter reserves against
+# (prompt_tokens + max_tokens) requested, not actual usage. 90s keeps worst-case reserved
+# usage (~4,757 tokens/call at BATCH_TOKEN_LIMIT=4000 + GROQ_MAX_TOKENS=1000) under ~60% of
+# that ceiling with real headroom, not tuned to the old model's much higher limit.
+BATCH_DELAY_MS = int(os.environ.get("P3_BATCH_DELAY_MS", "90000"))
+# gpt-oss-20b is a reasoning model (see reasoning_effort="low" in phase3_analyze.py); observed
+# low-effort completions run ~350-510 tokens including reasoning. 1000 leaves real margin
+# without reserving so much that TPM headroom disappears.
+GROQ_MAX_TOKENS = int(os.environ.get("P3_GROQ_MAX_TOKENS", "1000"))
 
 # P4
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY", "")

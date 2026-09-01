@@ -1,6 +1,7 @@
 """Phase 3: Read cleaned_reviews, batch, call Groq, parse JSON, synthesize, persist analysis."""
 import json
 import re
+import sys
 import time
 from typing import Any
 
@@ -111,7 +112,10 @@ def _groq_complete_once(prompt: str) -> str:
                 {"role": "user", "content": prompt},
             ],
             "temperature": 0.3,
-            "max_tokens": 2048,
+            "max_tokens": config.GROQ_MAX_TOKENS,
+            # gpt-oss-20b is a reasoning model: without this, it can spend the entire max_tokens
+            # budget on hidden reasoning tokens and return empty content (finish_reason="length").
+            "reasoning_effort": "low",
         },
         timeout=120,
     )
@@ -211,6 +215,7 @@ def run(db_path: str | None = None, run_id_arg: str | None = None) -> dict:
         conn.close()
 
     batches = _split_batches(reviews, config.BATCH_TOKEN_LIMIT)
+    fallback_used = False
     try:
         batch_results = []
         for i, batch in enumerate(batches):
@@ -226,19 +231,24 @@ def run(db_path: str | None = None, run_id_arg: str | None = None) -> dict:
         if len(batch_results) == 1:
             analysis = batch_results[0]
         else:
+            # Same pacing as inter-batch calls: the synthesis call is a real Groq request too and
+            # must not stack against the TPM window right after the last batch call.
+            time.sleep(max(config.BATCH_DELAY_MS / 1000.0, 2.0))
             syn_prompt = _build_synthesis_prompt(batch_results)
             raw_syn = _groq_complete(syn_prompt)
             parsed_syn = _extract_json(raw_syn)
             if not parsed_syn:
                 raise RuntimeError("Synthesis parse failed")
             analysis = _normalize_analysis(parsed_syn)
-    except Exception:
+    except Exception as e:
         # Keep the pipeline operational when Groq is unavailable/failing (mirrors Phase 4's Gemini fallback).
+        print(f"Phase 3 Groq analysis failed, falling back to star-rating grouping: {type(e).__name__}: {e}", file=sys.stderr)
+        fallback_used = True
         analysis = _fallback_analysis(reviews)
 
     conn = pipeline_db.get_connection(db_path)
     try:
-        pipeline_db.upsert_analysis(conn, run_id, analysis)
+        pipeline_db.upsert_analysis(conn, run_id, analysis, fallback_used=fallback_used)
     finally:
         conn.close()
-    return {"run_id": run_id, "analyzed": True, "analysis": analysis}
+    return {"run_id": run_id, "analyzed": True, "analysis": analysis, "fallback_used": fallback_used}

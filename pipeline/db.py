@@ -120,7 +120,8 @@ def _init_schema_sqlite(conn: sqlite3.Connection) -> None:
         themes_json TEXT NOT NULL,
         quotes_json TEXT NOT NULL,
         action_ideas_json TEXT NOT NULL,
-        analyzed_at TEXT NOT NULL
+        analyzed_at TEXT NOT NULL,
+        analysis_fallback_used INTEGER NOT NULL DEFAULT 0
     );
 
     CREATE TABLE IF NOT EXISTS report_metadata (
@@ -131,7 +132,8 @@ def _init_schema_sqlite(conn: sqlite3.Connection) -> None:
         word_count INTEGER NOT NULL,
         generated_at TEXT NOT NULL,
         storage_artifact_path TEXT NOT NULL,
-        body_html TEXT
+        body_html TEXT,
+        report_fallback_used INTEGER NOT NULL DEFAULT 0
     );
     CREATE INDEX IF NOT EXISTS idx_report_metadata_generated_at ON report_metadata(generated_at);
 
@@ -161,6 +163,14 @@ def _init_schema_sqlite(conn: sqlite3.Connection) -> None:
         pass
     try:
         conn.execute("ALTER TABLE recipients ADD COLUMN role_department TEXT")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        conn.execute("ALTER TABLE analysis ADD COLUMN analysis_fallback_used INTEGER NOT NULL DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        conn.execute("ALTER TABLE report_metadata ADD COLUMN report_fallback_used INTEGER NOT NULL DEFAULT 0")
     except sqlite3.OperationalError:
         pass
     conn.commit()
@@ -197,7 +207,8 @@ def _init_schema_pg(conn: "PgConnection") -> None:
         themes_json TEXT NOT NULL,
         quotes_json TEXT NOT NULL,
         action_ideas_json TEXT NOT NULL,
-        analyzed_at TEXT NOT NULL
+        analyzed_at TEXT NOT NULL,
+        analysis_fallback_used INTEGER NOT NULL DEFAULT 0
     );
 
     CREATE TABLE IF NOT EXISTS report_metadata (
@@ -208,7 +219,8 @@ def _init_schema_pg(conn: "PgConnection") -> None:
         word_count INTEGER NOT NULL,
         generated_at TEXT NOT NULL,
         storage_artifact_path TEXT NOT NULL,
-        body_html TEXT
+        body_html TEXT,
+        report_fallback_used INTEGER NOT NULL DEFAULT 0
     );
     CREATE INDEX IF NOT EXISTS idx_report_metadata_generated_at ON report_metadata(generated_at);
 
@@ -232,6 +244,8 @@ def _init_schema_pg(conn: "PgConnection") -> None:
         PRIMARY KEY (report_id, recipient_email)
     );
     ALTER TABLE recipients ADD COLUMN IF NOT EXISTS role_department TEXT;
+    ALTER TABLE analysis ADD COLUMN IF NOT EXISTS analysis_fallback_used INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE report_metadata ADD COLUMN IF NOT EXISTS report_fallback_used INTEGER NOT NULL DEFAULT 0;
     """)
 
 
@@ -361,25 +375,26 @@ def get_cleaned_reviews(conn, run_id: Optional[str] = None) -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def upsert_analysis(conn, run_id: str, data: dict) -> None:
+def upsert_analysis(conn, run_id: str, data: dict, fallback_used: bool = False) -> None:
     from datetime import datetime
     now = datetime.utcnow().isoformat() + "Z"
     themes = json.dumps(data.get("themes") or [])
     quotes = json.dumps(data.get("quotes") or [])
     actions = json.dumps(data.get("actionIdeas") or [])
     conn.execute(
-        """INSERT INTO analysis (run_id, themes_json, quotes_json, action_ideas_json, analyzed_at)
-           VALUES (?,?,?,?,?) ON CONFLICT(run_id) DO UPDATE SET
+        """INSERT INTO analysis (run_id, themes_json, quotes_json, action_ideas_json, analyzed_at, analysis_fallback_used)
+           VALUES (?,?,?,?,?,?) ON CONFLICT(run_id) DO UPDATE SET
            themes_json=excluded.themes_json, quotes_json=excluded.quotes_json,
-           action_ideas_json=excluded.action_ideas_json, analyzed_at=excluded.analyzed_at""",
-        (run_id, themes, quotes, actions, now),
+           action_ideas_json=excluded.action_ideas_json, analyzed_at=excluded.analyzed_at,
+           analysis_fallback_used=excluded.analysis_fallback_used""",
+        (run_id, themes, quotes, actions, now, 1 if fallback_used else 0),
     )
     conn.commit()
 
 
 def get_latest_analysis(conn) -> Optional[dict]:
     row = conn.execute(
-        "SELECT run_id, analyzed_at, themes_json, quotes_json, action_ideas_json FROM analysis ORDER BY analyzed_at DESC LIMIT 1"
+        "SELECT run_id, analyzed_at, themes_json, quotes_json, action_ideas_json, analysis_fallback_used FROM analysis ORDER BY analyzed_at DESC LIMIT 1"
     ).fetchone()
     if not row:
         return None
@@ -389,12 +404,13 @@ def get_latest_analysis(conn) -> Optional[dict]:
         "themes": json.loads(row[2] or "[]"),
         "quotes": json.loads(row[3] or "[]"),
         "actionIdeas": json.loads(row[4] or "[]"),
+        "analysis_fallback_used": bool(row[5]),
     }
 
 
 def get_analysis(conn, run_id: str) -> Optional[dict]:
     row = conn.execute(
-        "SELECT themes_json, quotes_json, action_ideas_json FROM analysis WHERE run_id = ?", (run_id,)
+        "SELECT themes_json, quotes_json, action_ideas_json, analysis_fallback_used FROM analysis WHERE run_id = ?", (run_id,)
     ).fetchone()
     if not row:
         return None
@@ -402,6 +418,7 @@ def get_analysis(conn, run_id: str) -> Optional[dict]:
         "themes": json.loads(row[0] or "[]"),
         "quotes": json.loads(row[1] or "[]"),
         "actionIdeas": json.loads(row[2] or "[]"),
+        "analysis_fallback_used": bool(row[3]),
     }
 
 
@@ -425,15 +442,17 @@ def insert_report_metadata(
     word_count: int,
     storage_path: str,
     body_html: Optional[str] = None,
+    fallback_used: bool = False,
 ) -> None:
     from datetime import datetime
     now = datetime.utcnow().isoformat() + "Z"
     conn.execute(
-        """INSERT INTO report_metadata (report_id, run_id, week_start_date, report_status, word_count, generated_at, storage_artifact_path, body_html)
-           VALUES (?,?,?,'generated',?,?,?,?) ON CONFLICT(report_id) DO UPDATE SET
+        """INSERT INTO report_metadata (report_id, run_id, week_start_date, report_status, word_count, generated_at, storage_artifact_path, body_html, report_fallback_used)
+           VALUES (?,?,?,'generated',?,?,?,?,?) ON CONFLICT(report_id) DO UPDATE SET
            week_start_date=excluded.week_start_date, report_status=excluded.report_status,
-           word_count=excluded.word_count, generated_at=excluded.generated_at, storage_artifact_path=excluded.storage_artifact_path, body_html=excluded.body_html""",
-        (report_id, run_id, week_start_date, word_count, now, storage_path, body_html),
+           word_count=excluded.word_count, generated_at=excluded.generated_at, storage_artifact_path=excluded.storage_artifact_path, body_html=excluded.body_html,
+           report_fallback_used=excluded.report_fallback_used""",
+        (report_id, run_id, week_start_date, word_count, now, storage_path, body_html, 1 if fallback_used else 0),
     )
     conn.commit()
 
@@ -575,7 +594,7 @@ def deactivate_recipient_by_id(conn, id: int) -> bool:
 
 def list_reports(conn) -> list[dict]:
     rows = conn.execute(
-        """SELECT report_id, run_id, week_start_date, report_status, word_count, generated_at, storage_artifact_path
+        """SELECT report_id, run_id, week_start_date, report_status, word_count, generated_at, storage_artifact_path, report_fallback_used
            FROM report_metadata ORDER BY generated_at DESC"""
     ).fetchall()
     return [dict(r) for r in rows]
