@@ -43,7 +43,7 @@ GROQ_MAX_TOKENS = int(os.environ.get("P3_GROQ_MAX_TOKENS", "1000"))
 
 # P4
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY", "")
-GEMINI_MODEL = os.environ.get("P4_GEMINI_MODEL", "gemini-2.0-flash")
+GEMINI_MODEL = os.environ.get("P4_GEMINI_MODEL", "gemini-3.6-flash")
 MAX_WORDS = int(os.environ.get("P4_MAX_WORDS", "400"))
 REPORTS_DIR = os.environ.get("P4_REPORTS_DIR") or _path("P4_REPORTS_DIR", "data/reports")
 

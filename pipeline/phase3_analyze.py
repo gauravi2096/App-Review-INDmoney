@@ -238,6 +238,7 @@ def run(db_path: str | None = None, run_id_arg: str | None = None) -> dict:
             raw_syn = _groq_complete(syn_prompt)
             parsed_syn = _extract_json(raw_syn)
             if not parsed_syn:
+                print(f"Phase 3 synthesis JSON parse failed. Raw Groq response:\n{raw_syn}", file=sys.stderr)
                 raise RuntimeError("Synthesis parse failed")
             analysis = _normalize_analysis(parsed_syn)
     except Exception as e:
