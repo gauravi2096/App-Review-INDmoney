@@ -67,6 +67,28 @@ Rules:
 - No names, emails, or other PII.
 - Output only the report text, nothing else."""
 
+# Exact ALL-CAPS headings _build_report_prompt instructs Gemini to produce. A response missing
+# any of these is incomplete (safety-filter stop, length cutoff, or anything else that cuts
+# generation short) regardless of which specific cause produced it -- see _validate_complete.
+_REQUIRED_SECTIONS = ["KEY THEMES", "VOICE OF THE USER", "RECOMMENDED ACTIONS"]
+
+def _missing_sections(text: str) -> list[str]:
+    return [s for s in _REQUIRED_SECTIONS if s not in text]
+
+def _validate_complete(text: str) -> str:
+    """Raise if the response is missing any required section, regardless of cause (safety-filter
+    stop, length cutoff, or anything else) -- treated the same as an API failure so it flows into
+    the existing fallback path rather than being accepted as a genuine, if partial, success."""
+    missing = _missing_sections(text)
+    if missing:
+        raise RuntimeError(f"Gemini response incomplete: missing section(s) {missing}")
+    return text
+
+def _finish_reason_str(finish_reason) -> str:
+    if finish_reason is None:
+        return ""
+    return getattr(finish_reason, "name", None) or str(finish_reason)
+
 def _gemini_complete_text(prompt: str) -> str:
     if not config.GEMINI_API_KEY:
         raise RuntimeError("GEMINI_API_KEY is not set")
@@ -84,10 +106,15 @@ def _gemini_complete_text(prompt: str) -> str:
                 max_output_tokens=2048,
             ),
         )
+        candidates = getattr(response, "candidates", None) or []
+        if candidates:
+            fr = _finish_reason_str(getattr(candidates[0], "finish_reason", None))
+            if fr and fr != "STOP":
+                print(f"Phase 4 Gemini: non-STOP finish_reason: {fr}", file=sys.stderr)
         text = getattr(response, "text", None)
         if not text:
             raise RuntimeError("Gemini API: no text in response")
-        return text.strip()
+        return _validate_complete(text.strip())
     except ImportError:
         r = requests.post(
             f"https://generativelanguage.googleapis.com/v1beta/models/{config.GEMINI_MODEL}:generateContent?key={config.GEMINI_API_KEY}",
@@ -96,10 +123,14 @@ def _gemini_complete_text(prompt: str) -> str:
         )
         r.raise_for_status()
         data = r.json()
-        text = (data.get("candidates") or [{}])[0].get("content", {}).get("parts", [{}])[0].get("text")
+        candidates = data.get("candidates") or [{}]
+        fr = candidates[0].get("finishReason") or ""
+        if fr and fr != "STOP":
+            print(f"Phase 4 Gemini: non-STOP finish_reason: {fr}", file=sys.stderr)
+        text = candidates[0].get("content", {}).get("parts", [{}])[0].get("text")
         if not text:
             raise RuntimeError("Gemini API: no text in response")
-        return text.strip()
+        return _validate_complete(text.strip())
 
 
 def _gemini_complete_with_retries(prompt: str) -> str:
