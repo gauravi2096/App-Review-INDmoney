@@ -13,6 +13,50 @@ from . import db as pipeline_db
 
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 
+# Groq/OpenAI strict structured-output schemas don't support minItems/maxItems/minimum/maximum;
+# cardinality ("3-5 themes", "exactly 3 quotes/actions") is enforced via the prompt text instead,
+# and rating is constrained via enum (the one constraint strict mode does support).
+_THEME_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "label": {"type": "string"},
+        "description": {"type": "string"},
+        "reviewCount": {"type": "integer"},
+    },
+    "required": ["label", "description", "reviewCount"],
+    "additionalProperties": False,
+}
+_QUOTE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "text": {"type": "string"},
+        "rating": {"type": "integer", "enum": [1, 2, 3, 4, 5]},
+    },
+    "required": ["text", "rating"],
+    "additionalProperties": False,
+}
+ANALYSIS_RESPONSE_FORMAT = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "review_analysis",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "themes": {"type": "array", "items": _THEME_SCHEMA},
+                "quotes": {"type": "array", "items": _QUOTE_SCHEMA},
+                "actionIdeas": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["themes", "quotes", "actionIdeas"],
+            "additionalProperties": False,
+        },
+    },
+}
+
+# Per-run count of how many structured-output calls needed their one retry (key: call label).
+# Reset at the top of run(); logged at the end so recurring glitches under strict mode are visible.
+_retry_counts: dict[str, int] = {}
+
 def _estimate_tokens(text: str) -> int:
     if not text:
         return 0
@@ -116,6 +160,7 @@ def _groq_complete_once(prompt: str) -> str:
             # gpt-oss-20b is a reasoning model: without this, it can spend the entire max_tokens
             # budget on hidden reasoning tokens and return empty content (finish_reason="length").
             "reasoning_effort": "low",
+            "response_format": ANALYSIS_RESPONSE_FORMAT,
         },
         timeout=120,
     )
@@ -152,6 +197,24 @@ def _groq_complete(prompt: str) -> str:
                 continue
             raise
 
+
+def _complete_structured(prompt: str, label: str) -> dict:
+    """Call Groq with strict JSON-schema structured outputs. Retries once (a fresh completion,
+    not a re-parse of the same text) if the response fails to parse for any reason, then raises
+    so the caller (and ultimately the pipeline run) fails outright rather than falling back."""
+    raw = _groq_complete(prompt)
+    parsed = _extract_json(raw)
+    if parsed is not None:
+        return parsed
+    print(f"Phase 3 {label}: structured-output response failed to parse on attempt 1; retrying once. Raw response:\n{raw}", file=sys.stderr)
+    _retry_counts[label] = _retry_counts.get(label, 0) + 1
+    raw_retry = _groq_complete(prompt)
+    parsed_retry = _extract_json(raw_retry)
+    if parsed_retry is not None:
+        return parsed_retry
+    print(f"Phase 3 {label}: structured-output response failed to parse on retry too. Raw response:\n{raw_retry}", file=sys.stderr)
+    raise RuntimeError(f"Phase 3 {label}: response could not be parsed as JSON after 1 retry")
+
 def _split_batches(reviews: list[dict], max_tokens: int) -> list[list[dict]]:
     base_prompt = _build_prompt([])
     base_tokens = _estimate_tokens(base_prompt)
@@ -174,35 +237,9 @@ def _split_batches(reviews: list[dict], max_tokens: int) -> list[list[dict]]:
         batches.append(current)
     return batches
 
-def _fallback_analysis(reviews: list[dict]) -> dict:
-    """Deterministic fallback when Groq is unavailable: group by star rating instead of LLM-derived themes."""
-    by_rating: dict[int, list[dict]] = {}
-    for r in reviews:
-        by_rating.setdefault(r["rating"], []).append(r)
-    themes = [
-        {
-            "label": f"{rating}-star reviews",
-            "description": "Automated fallback grouping by star rating; theme analysis was unavailable this run.",
-            "reviewCount": len(group),
-        }
-        for rating, group in sorted(by_rating.items(), reverse=True)
-    ][:5]
-    sample = sorted(reviews, key=lambda r: r["rating"])
-    picks = (sample[:2] + sample[-1:]) if len(sample) >= 3 else sample
-    quotes = []
-    for r in picks[:3]:
-        text = r["text"].strip()
-        if len(text) > 200:
-            text = text[:200].rsplit(" ", 1)[0] + "..."
-        quotes.append({"text": text, "rating": r["rating"]})
-    action_ideas = [
-        "Theme analysis was unavailable this run (Groq API failure); this report uses a star-rating fallback instead of LLM-derived themes.",
-    ]
-    return {"themes": themes, "quotes": quotes, "actionIdeas": action_ideas}
-
-
 def run(db_path: str | None = None, run_id_arg: str | None = None) -> dict:
     db_path = db_path or config.DB_PATH
+    _retry_counts.clear()
     # Close DB before Groq calls: Supabase pooler drops idle connections (SSL EOF) if the
     # connection sits open during long API work.
     conn = pipeline_db.get_connection(db_path)
@@ -215,41 +252,30 @@ def run(db_path: str | None = None, run_id_arg: str | None = None) -> dict:
         conn.close()
 
     batches = _split_batches(reviews, config.BATCH_TOKEN_LIMIT)
-    fallback_used = False
-    try:
-        batch_results = []
-        for i, batch in enumerate(batches):
-            if i > 0:
-                time.sleep(max(config.BATCH_DELAY_MS / 1000.0, 2.0))
-            prompt = _build_prompt(batch)
-            raw = _groq_complete(prompt)
-            parsed = _extract_json(raw)
-            if parsed:
-                batch_results.append(_normalize_analysis(parsed))
-        if not batch_results:
-            raise RuntimeError("No valid batch results")
-        if len(batch_results) == 1:
-            analysis = batch_results[0]
-        else:
-            # Same pacing as inter-batch calls: the synthesis call is a real Groq request too and
-            # must not stack against the TPM window right after the last batch call.
+    batch_results = []
+    for i, batch in enumerate(batches):
+        if i > 0:
             time.sleep(max(config.BATCH_DELAY_MS / 1000.0, 2.0))
-            syn_prompt = _build_synthesis_prompt(batch_results)
-            raw_syn = _groq_complete(syn_prompt)
-            parsed_syn = _extract_json(raw_syn)
-            if not parsed_syn:
-                print(f"Phase 3 synthesis JSON parse failed. Raw Groq response:\n{raw_syn}", file=sys.stderr)
-                raise RuntimeError("Synthesis parse failed")
-            analysis = _normalize_analysis(parsed_syn)
-    except Exception as e:
-        # Keep the pipeline operational when Groq is unavailable/failing (mirrors Phase 4's Gemini fallback).
-        print(f"Phase 3 Groq analysis failed, falling back to star-rating grouping: {type(e).__name__}: {e}", file=sys.stderr)
-        fallback_used = True
-        analysis = _fallback_analysis(reviews)
+        prompt = _build_prompt(batch)
+        parsed = _complete_structured(prompt, f"batch {i + 1}/{len(batches)}")
+        batch_results.append(_normalize_analysis(parsed))
+    if len(batch_results) == 1:
+        analysis = batch_results[0]
+    else:
+        # Same pacing as inter-batch calls: the synthesis call is a real Groq request too and
+        # must not stack against the TPM window right after the last batch call.
+        time.sleep(max(config.BATCH_DELAY_MS / 1000.0, 2.0))
+        syn_prompt = _build_synthesis_prompt(batch_results)
+        parsed_syn = _complete_structured(syn_prompt, "synthesis")
+        analysis = _normalize_analysis(parsed_syn)
+
+    total_retries = sum(_retry_counts.values())
+    if total_retries:
+        print(f"Phase 3 structured-output retries needed this run: {total_retries} {_retry_counts}", file=sys.stderr)
 
     conn = pipeline_db.get_connection(db_path)
     try:
-        pipeline_db.upsert_analysis(conn, run_id, analysis, fallback_used=fallback_used)
+        pipeline_db.upsert_analysis(conn, run_id, analysis, fallback_used=False)
     finally:
         conn.close()
-    return {"run_id": run_id, "analyzed": True, "analysis": analysis, "fallback_used": fallback_used}
+    return {"run_id": run_id, "analyzed": True, "analysis": analysis, "retries_used": total_retries}
