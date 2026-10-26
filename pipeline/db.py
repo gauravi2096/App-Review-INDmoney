@@ -309,7 +309,11 @@ def get_connection(db_path: Optional[str] = None):
         raise last_err
     path = (db_path or config.DB_PATH)
     Path(path).parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path)
+    # check_same_thread=False: Streamlit can rerun an @st.fragment on a different worker thread
+    # than the one that opened this connection. Each script/fragment run still only ever opens,
+    # uses, and closes its own connection sequentially within a single call, never concurrently,
+    # so relaxing sqlite3's same-thread check is safe here.
+    conn = sqlite3.connect(path, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     _init_schema_sqlite(conn)
     return conn
@@ -677,3 +681,12 @@ def get_delivery_summary_per_report(conn) -> dict[str, dict]:
         else:
             out[rid]["not_sent"] = c
     return out
+
+
+# --- Dashboard-only read helpers (UI; do not affect pipeline phases) ---
+def get_distinct_raw_reviews(conn) -> list[dict]:
+    """Every run re-inserts its whole review window, so de-dup on (date, rating, text) in SQL
+    before any aggregation; callers group by week in pandas since that math differs between
+    SQLite and Postgres."""
+    rows = conn.execute("SELECT DISTINCT date, rating, text FROM raw_reviews").fetchall()
+    return [dict(r) for r in rows]

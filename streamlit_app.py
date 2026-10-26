@@ -1,8 +1,11 @@
 """
 INDmoney Review Pulse – Streamlit app.
-Runs all phases (P1–P6) in one deployment: manage recipients, trigger pipeline, view reports and delivery.
+Tabs: Latest report (chart + latest report, read-only), Recipients (add/edit/delete gated behind
+a one-time-per-action admin password dialog), Delivery logs. The pipeline itself runs only via
+the scheduled/manual GitHub Actions workflow — this app has no way to trigger it.
 Uses local SQLite and Python pipeline by default. Optional: connect to Phase 6 API instead (sidebar).
 """
+import hmac
 import html
 import os
 import streamlit as st
@@ -18,12 +21,12 @@ import contextlib
 from datetime import datetime
 from pathlib import Path
 
+import altair as alt
 import pandas as pd
 import streamlit.components.v1 as components
 
 from pipeline import config as pipeline_config
 from pipeline import db as pipeline_db
-from pipeline.runner import run_weekly_pipeline
 
 def inject_custom_css():
     st.markdown(
@@ -245,6 +248,24 @@ def render_run_status_badge(status, failed_phase=None, error_message=None):
         return f'<span style="{pill}background:#EEF0FF;color:#4F46E5;">Running…</span>'
     return "<span style='color:#8b8f98'>—</span>"
 
+def _st_secret(name: str):
+    """st.secrets.get(name) raises StreamlitSecretNotFoundError (not caught by .get()'s own
+    KeyError handling) when no secrets.toml exists anywhere — a real case for local/.env-only
+    setups, not a hypothetical. Swallow that so callers can fall back to env vars."""
+    if not hasattr(st, "secrets"):
+        return None
+    try:
+        return st.secrets.get(name)
+    except Exception:
+        return None
+
+def get_secret(name: str):
+    """Same lookup order the app already uses for P6_API_URL: st.secrets first, env fallback."""
+    val = _st_secret(name)
+    if val:
+        return val
+    return os.environ.get(name) or None
+
 def week_label(week_start_date, generated_at):
     src = week_start_date or generated_at
     if not src:
@@ -310,6 +331,7 @@ def render_delivery_table(rows, fetch_report_fn=None):
         report_id = row.get("_report_id")
         run_key = row.get("_run_id") or report_id or id(row)
         row_key = f"delivery_row_{run_key}"
+        toggle_key = f"view_report_{run_key}"
         with st.container(key=row_key):
             cols = st.columns(widths)
             cols[0].write(row["Week"])
@@ -320,7 +342,6 @@ def render_delivery_table(rows, fetch_report_fn=None):
             )
             cols[3].markdown(colored(row["Sent"], "#1a7f37", "#8b8f98"), unsafe_allow_html=True)
             cols[4].markdown(colored(row["Failed"], "#cf222e", "#8b8f98"), unsafe_allow_html=True)
-            toggle_key = f"view_report_{run_key}"
             with cols[5]:
                 with st.container(key=f"view_report_wrap_{run_key}"):
                     if report_id:
@@ -343,7 +364,6 @@ def render_delivery_table(rows, fetch_report_fn=None):
                         with st.container(key=f"view_report_wrap_close_{run_key}"):
                             if st.button("Close", key=f"close_{toggle_key}", type="tertiary"):
                                 st.session_state[toggle_key] = False
-                                st.rerun()
                     components.html(content, height=500, scrolling=True)
                 else:
                     st.info(
@@ -358,19 +378,272 @@ def get_db_path():
     return pipeline_config.DB_PATH
 
 def use_external_api():
-    if hasattr(st, "secrets") and st.secrets.get("P6_API_URL"):
+    if _st_secret("P6_API_URL"):
         return True
     if os.environ.get("P6_API_URL"):
         return True
     return st.sidebar.checkbox("Use external Phase 6 API", value=False, help="If checked, connect to Phase 6 API for data and actions instead of local pipeline.")
 
 def get_api_base():
-    base = st.secrets.get("P6_API_URL") if hasattr(st, "secrets") else None
+    base = _st_secret("P6_API_URL")
     if not base:
         base = os.environ.get("P6_API_URL", "").rstrip("/")
     if not base:
         base = st.sidebar.text_input("Phase 6 API URL", value="http://localhost:4006", key="api_url").rstrip("/")
     return base
+
+# --- Rating-over-time chart ---
+@st.cache_data(ttl=600)
+def load_rating_over_time(_conn):
+    """_conn is prefixed with an underscore so st.cache_data doesn't try to hash a DB connection.
+    De-dup happens in SQL (SELECT DISTINCT); week grouping happens here in pandas so the same
+    code works against both SQLite and Postgres. Weeks with no data are reindexed in as NaN
+    rows (not 0), so the chart renders them as a gap rather than a dip to zero."""
+    rows = pipeline_db.get_distinct_raw_reviews(_conn)
+    df = pd.DataFrame(rows, columns=["date", "rating", "text"])
+    if df.empty:
+        return df.assign(week_start=[], avg_rating=[], review_count=[])
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    df = df.dropna(subset=["date"])
+    if df.empty:
+        return pd.DataFrame(columns=["week_start", "avg_rating", "review_count"])
+    df["week_start"] = df["date"] - pd.to_timedelta(df["date"].dt.day_of_week, unit="D")
+    weekly = df.groupby("week_start").agg(avg_rating=("rating", "mean"), review_count=("rating", "size")).reset_index()
+    full_weeks = pd.date_range(weekly["week_start"].min(), weekly["week_start"].max(), freq="7D")
+    weekly = weekly.set_index("week_start").reindex(full_weeks).rename_axis("week_start").reset_index()
+    return weekly
+
+def render_rating_chart(weekly_df):
+    if weekly_df.empty or weekly_df["avg_rating"].dropna().empty:
+        st.info("Not enough review data yet to chart ratings over time.")
+        return
+    y_enc = alt.Y("avg_rating:Q", title="Avg rating", scale=alt.Scale(domain=[1, 5]))
+    line = alt.Chart(weekly_df).mark_line(color="#4F46E5").encode(
+        x=alt.X("week_start:T", title="Week"), y=y_enc,
+    )
+    points_df = weekly_df.dropna(subset=["avg_rating"])
+    points = alt.Chart(points_df).mark_point(filled=True, size=60, color="#4F46E5").encode(
+        x=alt.X("week_start:T", title="Week"), y=y_enc,
+        tooltip=[
+            alt.Tooltip("week_start:T", title="Week"),
+            alt.Tooltip("avg_rating:Q", title="Avg rating", format=".1f"),
+            alt.Tooltip("review_count:Q", title="Reviews"),
+        ],
+    )
+    st.altair_chart((line + points).properties(height=320), width="stretch")
+    st.caption("Weekly average of Google Play reviews, de-duplicated across runs.")
+
+# --- Tab 1: Latest report ---
+def render_latest_report_tab(conn):
+    """Only the chart and the latest report, stacked, full width — no header, no run status,
+    no buttons. The report is the single most recent report_metadata row, independent of
+    whether a later pipeline run since then has failed."""
+    render_rating_chart(load_rating_over_time(conn))
+    meta = pipeline_db.get_report_metadata(conn)
+    if meta and meta.get("report_id"):
+        content, source = fetch_report_local(conn, meta["report_id"], meta.get("storage_artifact_path"))
+        if content:
+            # Phase 4 caps reports at ~400 words (config.MAX_WORDS); 800px comfortably fits that
+            # without leaving a wall of blank space below short reports — scrolling=True covers outliers.
+            components.html(content, height=800, scrolling=True)
+        else:
+            st.info(
+                "Report content isn't available for this run. It's only stored in the database "
+                "when DATABASE_URL (shared hosted DB) is set; otherwise it relies on the local report "
+                "file, which may no longer exist."
+            )
+    else:
+        st.info("No report has been generated yet.")
+
+# --- Tab 2: Recipients ---
+# A single module-level dialog (not nested in the fragment) so Streamlit's dialog identity
+# stays stable across fragment reruns; it reads which action/row is pending from session_state
+# rather than from closed-over arguments, and opens its own connection rather than sharing one
+# with the fragment that triggered it.
+@st.dialog("Admin password required")
+def _recipients_password_dialog():
+    target = st.session_state.get("recipients_dialog_target")
+    if not target:
+        return
+    action, rid = target
+    app_password = get_secret("APP_PASSWORD")
+    if not app_password:
+        st.error("Admin password is not configured")
+        if st.button("Close", key="recipients_dialog_close_noconfig"):
+            st.session_state.recipients_dialog_target = None
+            # Plain st.rerun(): dialogs are an app-level overlay even when triggered from a
+            # fragment, so scope="fragment" leaves the dialog shell stuck open (confirmed live).
+            st.rerun()
+        return
+    pwd = st.text_input("Password", type="password", key="recipients_dialog_pwd")
+    c1, c2 = st.columns([1, 1])
+    with c1:
+        if st.button("Confirm", key="recipients_dialog_confirm", type="primary"):
+            if hmac.compare_digest(pwd or "", app_password):
+                ok = True
+                if action == "add":
+                    st.session_state.show_add_recipient = True
+                elif action == "edit":
+                    st.session_state[f"edit_open_{rid}"] = True
+                elif action == "delete":
+                    conn = pipeline_db.get_connection(pipeline_config.DB_PATH)
+                    try:
+                        pipeline_db.deactivate_recipient_by_id(conn, rid)
+                        st.success("Removed.")
+                    except Exception as ex:
+                        st.error(str(ex))
+                        ok = False
+                    finally:
+                        conn.close()
+                if ok:
+                    st.session_state.recipients_dialog_target = None
+                    st.rerun()
+            else:
+                st.error("Incorrect password.")
+    with c2:
+        if st.button("Cancel", key="recipients_dialog_cancel"):
+            st.session_state.recipients_dialog_target = None
+            st.rerun()
+
+@st.fragment
+def render_recipients_tab(db_path):
+    """Opens its own DB connection rather than reusing main()'s: a fragment reruns on its own
+    when a widget inside it fires, without re-running the rest of main() — so a connection
+    opened (and later closed) by the outer call would be stale/closed on that next interaction.
+    The recipient list itself is always visible; only Add/Edit/Delete are password-gated, via a
+    dialog asked fresh every time (no session-wide unlock)."""
+    conn = pipeline_db.get_connection(db_path)
+
+    if st.session_state.get("recipients_dialog_target"):
+        _recipients_password_dialog()
+
+    if "show_add_recipient" not in st.session_state:
+        st.session_state.show_add_recipient = False
+    with st.container(key="add_recipient_cta"):
+        if st.button("Add recipient", icon=":material/add:", type="primary", key="toggle_add_recipient"):
+            st.session_state.recipients_dialog_target = ("add", None)
+            st.rerun(scope="fragment")
+    if st.session_state.show_add_recipient:
+        with st.container(border=True):
+            add_email = st.text_input("Email", key="add_email", placeholder="email@example.com")
+            add_name = st.text_input("Display name (optional)", key="add_name")
+            add_role = render_role_picker("add")
+            fc1, fc2 = st.columns([1, 1])
+            with fc1:
+                if st.button("Add recipient", key="submit_add_recipient", type="primary"):
+                    if not (add_email and add_email.strip()):
+                        st.error("Email is required.")
+                    else:
+                        try:
+                            pipeline_db.add_recipient(conn, add_email.strip(), (add_name.strip() or None) if add_name else None, add_role)
+                            st.session_state.show_add_recipient = False
+                            st.success("Recipient added.")
+                            conn.close()  # st.rerun() aborts this call, skipping the conn.close() at the function's end
+                            st.rerun(scope="fragment")
+                        except Exception as e:
+                            st.error(str(e))
+            with fc2:
+                if st.button("Cancel", key="cancel_add_recipient"):
+                    st.session_state.show_add_recipient = False
+                    conn.close()
+                    st.rerun(scope="fragment")
+
+    recipients = pipeline_db.list_recipients(conn)
+    active = [r for r in recipients if r.get("active") == 1]
+    if not active:
+        st.info("No active recipients. Add one above.")
+        st.divider()
+    else:
+        recipient_widths = [1.5, 1.3, 2, 0.75, 0.75]
+        render_table_header(recipient_widths, ["Display Name", "Role / Department", "Email", "", ""], key="recipients_header")
+        for r in active:
+            rid, email, display_name = r.get("id"), r.get("email", ""), r.get("display_name") or ""
+            role_department = r.get("role_department") or ""
+            edit_key = f"edit_open_{rid}"
+            if edit_key not in st.session_state:
+                st.session_state[edit_key] = False
+            with st.container(key=f"recipients_row_{rid}"):
+                c1, c2, c3, c4, c5 = st.columns(recipient_widths)
+                with c1: render_plain_text(display_name)
+                with c2: render_role_badge(role_department)
+                with c3: render_plain_text(email)
+                with c4:
+                    with st.container(key=f"edit_wrap_{rid}"):
+                        if st.button("Edit", key=f"edit_{rid}", type="tertiary", help="Edit"):
+                            st.session_state.recipients_dialog_target = ("edit", rid)
+                            st.rerun(scope="fragment")
+                with c5:
+                    with st.container(key=f"delete_wrap_{rid}"):
+                        if st.button("Delete", key=f"del_{rid}", type="tertiary", help="Delete"):
+                            st.session_state.recipients_dialog_target = ("delete", rid)
+                            st.rerun(scope="fragment")
+            if st.session_state[edit_key]:
+                with st.container(border=True):
+                    new_email = st.text_input("Email", value=email, key=f"edit_email_{rid}")
+                    new_name = st.text_input("Display name", value=display_name, key=f"edit_name_{rid}")
+                    new_role = render_role_picker(f"edit_{rid}", current_value=role_department)
+                    ec1, ec2 = st.columns([1, 1])
+                    with ec1:
+                        if st.button("Save", key=f"save_{rid}", type="primary"):
+                            try:
+                                ok = pipeline_db.update_recipient(conn, rid, email=new_email.strip(), display_name=new_name.strip() or None, role_department=new_role or "")
+                                if ok:
+                                    st.session_state[edit_key] = False
+                                    st.success("Updated.")
+                                    conn.close()
+                                    st.rerun(scope="fragment")
+                                else:
+                                    st.error(f"Update failed: no recipient found with id {rid}. Refresh and try again.")
+                            except Exception as ex:
+                                st.error(str(ex))
+                    with ec2:
+                        if st.button("Cancel", key=f"cancel_edit_{rid}"):
+                            st.session_state[edit_key] = False
+                            conn.close()
+                            st.rerun(scope="fragment")
+            with st.container(key=f"recipients_divider_{rid}"):
+                st.divider()
+    conn.close()
+
+# --- Tab 3: Delivery logs ---
+def render_delivery_logs_tab(conn):
+    st.caption("Every pipeline run, including ones that failed before any email was sent.")
+    runs = pipeline_db.list_pipeline_runs(conn)
+    reports_by_run = {r["run_id"]: r for r in pipeline_db.list_reports(conn)}
+    summary_map = pipeline_db.get_delivery_summary_per_report(conn)
+    if not runs:
+        st.info("No pipeline runs yet.")
+        return
+    rows = []
+    for run in runs:
+        run_id = run["run_id"]
+        report = reports_by_run.get(run_id)
+        if report:
+            rid = report.get("report_id")
+            summary = summary_map.get(rid, {"sent": 0, "failed": 0, "not_sent": 0})
+            week = week_label(report.get("week_start_date"), report.get("generated_at"))
+            generated = (report.get("generated_at") or "–")[:10]
+            sent, failed = summary["sent"], summary["failed"]
+            storage_path = report.get("storage_artifact_path")
+        else:
+            rid = None
+            week = week_label(None, run.get("started_at"))
+            generated = (run.get("started_at") or "–")[:10]
+            sent, failed = None, None
+            storage_path = None
+        rows.append({
+            "Week": week,
+            "Generated": generated,
+            "Status": run["status"],
+            "FailedPhase": run.get("failed_phase"),
+            "ErrorMessage": run.get("error_message"),
+            "Sent": sent,
+            "Failed": failed,
+            "_report_id": rid,
+            "_run_id": run_id,
+            "_storage_path": storage_path,
+        })
+    render_delivery_table(rows, fetch_report_fn=lambda rid, sp: fetch_report_local(conn, rid, sp))
 
 def main():
     use_api = use_external_api()
@@ -378,7 +651,7 @@ def main():
 
     inject_custom_css()
     st.title("INDmoney Review Pulse")
-    st.caption("Manage recipients, run the weekly pipeline (ingest → clean → analyze → report → email), and view delivery status.")
+    st.caption("View the latest report, manage recipients, and track delivery status.")
 
     if use_api:
         import requests
@@ -512,150 +785,13 @@ def main():
     db_path = get_db_path()
     conn = pipeline_db.get_connection(db_path)
 
-    # Run pipeline button
-    st.sidebar.subheader("Pipeline")
-    if st.sidebar.button("Run weekly pipeline (P1→P5)"):
-        with st.spinner("Running pipeline (ingest, clean, analyze, report, email). This may take a few minutes."):
-            try:
-                results = run_weekly_pipeline(db_path)
-                st.sidebar.success("Pipeline finished.")
-                st.success("Pipeline completed: P1 ingested, P2 cleaned, P3 analyzed, P4 generated report, P5 sent emails (if recipients configured).")
-                if results.get("phase5"):
-                    st.info(f"Emails sent: {results['phase5'].get('sent', 0)} of {results['phase5'].get('total', 0)} recipients.")
-            except Exception as e:
-                st.error(f"Pipeline failed: {e}")
-                st.sidebar.error("Pipeline failed.")
-        st.rerun()
-
-    st.sidebar.caption("Built-in pipeline uses GROQ_API_KEY, GEMINI_API_KEY, and SMTP env vars. Set in Secrets or .env.")
-
-    # --- Recipients (local DB) ---
-    st.subheader("Recipients")
-    if "show_add_recipient" not in st.session_state:
-        st.session_state.show_add_recipient = False
-    with st.container(key="add_recipient_cta"):
-        if st.button("Add recipient", icon=":material/add:", type="primary", key="toggle_add_recipient"):
-            st.session_state.show_add_recipient = not st.session_state.show_add_recipient
-    if st.session_state.show_add_recipient:
-        with st.container(border=True):
-            add_email = st.text_input("Email", key="add_email", placeholder="email@example.com")
-            add_name = st.text_input("Display name (optional)", key="add_name")
-            add_role = render_role_picker("add")
-            fc1, fc2 = st.columns([1, 1])
-            with fc1:
-                if st.button("Add recipient", key="submit_add_recipient", type="primary"):
-                    if not (add_email and add_email.strip()):
-                        st.error("Email is required.")
-                    else:
-                        try:
-                            pipeline_db.add_recipient(conn, add_email.strip(), (add_name.strip() or None) if add_name else None, add_role)
-                            st.session_state.show_add_recipient = False
-                            st.success("Recipient added.")
-                            st.rerun()
-                        except Exception as e:
-                            st.error(str(e))
-            with fc2:
-                if st.button("Cancel", key="cancel_add_recipient"):
-                    st.session_state.show_add_recipient = False
-                    st.rerun()
-
-    recipients = pipeline_db.list_recipients(conn)
-    active = [r for r in recipients if r.get("active") == 1]
-    if not active:
-        st.info("No active recipients. Add one above.")
-        st.divider()
-    else:
-        recipient_widths = [1.5, 1.3, 2, 0.75, 0.75]
-        render_table_header(recipient_widths, ["Display Name", "Role / Department", "Email", "", ""], key="recipients_header")
-        for r in active:
-            rid, email, display_name = r.get("id"), r.get("email", ""), r.get("display_name") or ""
-            role_department = r.get("role_department") or ""
-            edit_key = f"edit_open_{rid}"
-            if edit_key not in st.session_state:
-                st.session_state[edit_key] = False
-            with st.container(key=f"recipients_row_{rid}"):
-                c1, c2, c3, c4, c5 = st.columns(recipient_widths)
-                with c1: render_plain_text(display_name)
-                with c2: render_role_badge(role_department)
-                with c3: render_plain_text(email)
-                with c4:
-                    with st.container(key=f"edit_wrap_{rid}"):
-                        if st.button("Edit", key=f"edit_{rid}", type="tertiary", help="Edit"):
-                            st.session_state[edit_key] = not st.session_state[edit_key]
-                with c5:
-                    with st.container(key=f"delete_wrap_{rid}"):
-                        if st.button("Delete", key=f"del_{rid}", type="tertiary", help="Delete"):
-                            try:
-                                pipeline_db.deactivate_recipient_by_id(conn, rid)
-                                st.success("Removed.")
-                                st.rerun()
-                            except Exception as ex:
-                                st.error(str(ex))
-            if st.session_state[edit_key]:
-                with st.container(border=True):
-                    new_email = st.text_input("Email", value=email, key=f"edit_email_{rid}")
-                    new_name = st.text_input("Display name", value=display_name, key=f"edit_name_{rid}")
-                    new_role = render_role_picker(f"edit_{rid}", current_value=role_department)
-                    ec1, ec2 = st.columns([1, 1])
-                    with ec1:
-                        if st.button("Save", key=f"save_{rid}", type="primary"):
-                            try:
-                                ok = pipeline_db.update_recipient(conn, rid, email=new_email.strip(), display_name=new_name.strip() or None, role_department=new_role or "")
-                                if ok:
-                                    st.session_state[edit_key] = False
-                                    st.success("Updated.")
-                                    st.rerun()
-                                else:
-                                    st.error(f"Update failed: no recipient found with id {rid}. Refresh and try again.")
-                            except Exception as ex:
-                                st.error(str(ex))
-                    with ec2:
-                        if st.button("Cancel", key=f"cancel_edit_{rid}"):
-                            st.session_state[edit_key] = False
-                            st.rerun()
-            with st.container(key=f"recipients_divider_{rid}"):
-                st.divider()
-
-    # --- Reports and delivery (local DB) ---
-    st.subheader("Weekly email delivery")
-    st.caption("Every pipeline run, including ones that failed before any email was sent.")
-    runs = pipeline_db.list_pipeline_runs(conn)
-    reports_by_run = {r["run_id"]: r for r in pipeline_db.list_reports(conn)}
-    summary_map = pipeline_db.get_delivery_summary_per_report(conn)
-    if not runs:
-        st.info("No pipeline runs yet. Run the pipeline from the sidebar.")
-    else:
-        rows = []
-        for run in runs:
-            run_id = run["run_id"]
-            report = reports_by_run.get(run_id)
-            if report:
-                rid = report.get("report_id")
-                summary = summary_map.get(rid, {"sent": 0, "failed": 0, "not_sent": 0})
-                week = week_label(report.get("week_start_date"), report.get("generated_at"))
-                generated = (report.get("generated_at") or "–")[:10]
-                sent, failed = summary["sent"], summary["failed"]
-                storage_path = report.get("storage_artifact_path")
-            else:
-                # Run never reached Phase 4 (failed earlier, or is still running) — no report to join.
-                rid = None
-                week = week_label(None, run.get("started_at"))
-                generated = (run.get("started_at") or "–")[:10]
-                sent, failed = None, None
-                storage_path = None
-            rows.append({
-                "Week": week,
-                "Generated": generated,
-                "Status": run["status"],
-                "FailedPhase": run.get("failed_phase"),
-                "ErrorMessage": run.get("error_message"),
-                "Sent": sent,
-                "Failed": failed,
-                "_report_id": rid,
-                "_run_id": run_id,
-                "_storage_path": storage_path,
-            })
-        render_delivery_table(rows, fetch_report_fn=lambda rid, sp: fetch_report_local(conn, rid, sp))
+    tab_report, tab_recipients, tab_delivery = st.tabs(["Latest report", "Recipients", "Delivery logs"])
+    with tab_report:
+        render_latest_report_tab(conn)
+    with tab_recipients:
+        render_recipients_tab(db_path)
+    with tab_delivery:
+        render_delivery_logs_tab(conn)
 
     conn.close()
     st.sidebar.divider()
