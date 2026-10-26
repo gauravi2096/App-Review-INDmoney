@@ -88,7 +88,6 @@ jobs:
       - name: Run pipeline (P1→P5)
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          P1_DATE_WINDOW_WEEKS: "8"
           # P3_BATCH_TOKEN_LIMIT/P3_BATCH_DELAY_MS intentionally not overridden here: use
           # pipeline/config.py's defaults, tuned for openai/gpt-oss-20b's 8,000 TPM free-tier cap.
           # If Gemini key/quota is unavailable, Phase 4 now falls back to deterministic report text.

@@ -20,7 +20,7 @@ def _path(name: str, default_subpath: str) -> str:
 APP_ID = os.environ.get("P1_APP_ID", "in.indwealth")
 LANG = os.environ.get("P1_LANG", "en")
 COUNTRY = os.environ.get("P1_COUNTRY", "in")
-DATE_WINDOW_WEEKS = int(os.environ.get("P1_DATE_WINDOW_WEEKS", "12"))
+DATE_WINDOW_WEEKS = int(os.environ.get("P1_DATE_WINDOW_WEEKS", "4"))
 # Shared hosted DB: set DATABASE_URL (e.g. Postgres from Supabase/Neon/Railway) so pipeline and Streamlit use the same DB.
 DATABASE_URL = os.environ.get("DATABASE_URL", "").strip() or None
 DB_PATH = os.environ.get("P1_DB_PATH") or os.environ.get("P6_DB_PATH") or _path("P1_DB_PATH", "data/product_pulse.db")

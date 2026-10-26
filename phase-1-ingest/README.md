@@ -1,6 +1,6 @@
 # Phase 1: Ingest
 
-Fetches Google Play Store reviews for INDmoney via **google-play-scraper**, filters to the last 8–12 weeks, validates required fields, and persists to the **raw_reviews** table.
+Fetches Google Play Store reviews for INDmoney via **google-play-scraper**, filters to the last 4 weeks, validates required fields, and persists to the **raw_reviews** table.
 
 ## Architecture (from PRODUCT-PULSE-ARCHITECTURE.md)
 
@@ -50,7 +50,7 @@ Uses `P1_DB_PATH`; writes the same JSON array as the automatic step.
 | `P1_APP_ID` | `in.indwealth` | INDmoney Play Store app ID |
 | `P1_LANG` | `en` | Language code for reviews |
 | `P1_COUNTRY` | `in` | Country code for reviews |
-| `P1_DATE_WINDOW_WEEKS` | `12` | Include reviews from last N weeks (8–12) |
+| `P1_DATE_WINDOW_WEEKS` | `4` | Include reviews from last N weeks |
 | `P1_DB_PATH` | `./data/product-pulse.db` | SQLite database path |
 | `P1_PAGINATION_DELAY_MS` | `1500` | Delay (ms) between pagination requests; increase (e.g. 3000) to reduce rate limiting |
 | `P1_MAX_RETRIES` | `3` | Max retries per Play request on transient errors (e.g. ECONNRESET) |

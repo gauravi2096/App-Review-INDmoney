@@ -29,7 +29,7 @@ Each theme ships with a short description, a couple of representative quotes pul
 
 ### Pipeline mechanics
 
-**Report period.** Fixed rolling lookback window measured from wall-clock execution time — not anchored to the previous run. Default 12 weeks, configurable via `P1_DATE_WINDOW_WEEKS`. A skipped or delayed run doesn't trigger catch-up logic; the next run just looks back the same window from its own execution time.
+**Report period.** Fixed rolling lookback window measured from wall-clock execution time — not anchored to the previous run. Default 4 weeks, configurable via `P1_DATE_WINDOW_WEEKS`. A skipped or delayed run doesn't trigger catch-up logic; the next run just looks back the same window from its own execution time.
 
 **Model mapping.**
 - Phase 3 (theme analysis) uses **Groq** (`openai/gpt-oss-20b`) — many calls per run, one per review batch, paced to stay under the model's free-tier TPM ceiling (`P3_BATCH_DELAY_MS`, `P3_GROQ_MAX_TOKENS`; `reasoning_effort: "low"`, since gpt-oss-20b is a reasoning model that can otherwise spend its whole token budget on hidden reasoning tokens before emitting an answer).
@@ -58,7 +58,7 @@ Each theme ships with a short description, a couple of representative quotes pul
 - Theme clustering is LLM judgment, not validated against ground truth — no formal accuracy evaluation has been run yet.
 - Both Phase 3 and Phase 4 now degrade to a deterministic fallback rather than halting, but a run that fails before that point — most concretely, the database itself being unreachable — still can't be recorded anywhere in-app. That gap showed up for real on three separate weeks (Aug 17, 24, 31) and had to be reconstructed manually from GitHub Actions logs afterward, not caught automatically.
 - Phase 4's configured model (`gemini-2.0-flash`) was deprecated by Google after this was built; recent runs have been sending the deterministic fallback report rather than real Gemini output until the model name is updated — caught via the new fallback logging, not by design.
-- Report period doesn't adjust for skipped runs — if a run is delayed, the next one's 12-week window doesn't "catch up," it just looks back 12 weeks from whenever it actually executes.
+- Report period doesn't adjust for skipped runs — if a run is delayed, the next one's 4-week window doesn't "catch up," it just looks back 4 weeks from whenever it actually executes.
 - The pipeline was deliberately paused for roughly 15 weeks (mid-April to late July 2026) during portfolio and interview prep. Not a reliability failure, but a visible gap in run history worth being upfront about.
 - Small recipient list (2) — not yet tested at scale.
 - No trend-over-time tracking on themes, by design (see above); only raw per-period snapshots currently.
