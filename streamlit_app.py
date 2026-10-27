@@ -377,6 +377,20 @@ def render_delivery_table(rows, fetch_report_fn=None):
 def get_db_path():
     return pipeline_config.DB_PATH
 
+@st.cache_resource
+def _ensure_schema_once():
+    """Runs CREATE/ALTER exactly once per Streamlit server process, before any other connection
+    in this app is opened. In Postgres, ALTER TABLE needs an ACCESS EXCLUSIVE lock; running it on
+    every get_connection() call (the old default) could self-deadlock against another connection
+    in the same process that had left a read transaction idle (see get_connection's docstring).
+    st.cache_resource caches the return value for the life of the process, so this body — and the
+    schema work inside it — runs once total, not once per session/rerun. Returns (and caches) a
+    plain bool rather than the connection itself: the schema is applied and committed inside
+    get_connection()/_init_schema_pg before this closes it; nothing needs to stay open."""
+    conn = pipeline_db.get_connection(get_db_path(), init_schema=True)
+    conn.close()
+    return True
+
 def use_external_api():
     if _st_secret("P6_API_URL"):
         return True
@@ -486,7 +500,7 @@ def _recipients_password_dialog():
                 elif action == "edit":
                     st.session_state[f"edit_open_{rid}"] = True
                 elif action == "delete":
-                    conn = pipeline_db.get_connection(pipeline_config.DB_PATH)
+                    conn = pipeline_db.get_connection(pipeline_config.DB_PATH, init_schema=False)
                     try:
                         pipeline_db.deactivate_recipient_by_id(conn, rid)
                         st.success("Removed.")
@@ -511,99 +525,98 @@ def render_recipients_tab(db_path):
     when a widget inside it fires, without re-running the rest of main() — so a connection
     opened (and later closed) by the outer call would be stale/closed on that next interaction.
     The recipient list itself is always visible; only Add/Edit/Delete are password-gated, via a
-    dialog asked fresh every time (no session-wide unlock)."""
-    conn = pipeline_db.get_connection(db_path)
+    dialog asked fresh every time (no session-wide unlock). init_schema=False: _ensure_schema_once()
+    already ran it for this process. The whole body is wrapped in try/finally so the connection is
+    closed on every exit path — including st.rerun(), which raises to unwind out of this call."""
+    conn = pipeline_db.get_connection(db_path, init_schema=False)
+    try:
+        if st.session_state.get("recipients_dialog_target"):
+            _recipients_password_dialog()
 
-    if st.session_state.get("recipients_dialog_target"):
-        _recipients_password_dialog()
-
-    if "show_add_recipient" not in st.session_state:
-        st.session_state.show_add_recipient = False
-    with st.container(key="add_recipient_cta"):
-        if st.button("Add recipient", icon=":material/add:", type="primary", key="toggle_add_recipient"):
-            st.session_state.recipients_dialog_target = ("add", None)
-            st.rerun(scope="fragment")
-    if st.session_state.show_add_recipient:
-        with st.container(border=True):
-            add_email = st.text_input("Email", key="add_email", placeholder="email@example.com")
-            add_name = st.text_input("Display name (optional)", key="add_name")
-            add_role = render_role_picker("add")
-            fc1, fc2 = st.columns([1, 1])
-            with fc1:
-                if st.button("Add recipient", key="submit_add_recipient", type="primary"):
-                    if not (add_email and add_email.strip()):
-                        st.error("Email is required.")
-                    else:
-                        try:
-                            pipeline_db.add_recipient(conn, add_email.strip(), (add_name.strip() or None) if add_name else None, add_role)
-                            st.session_state.show_add_recipient = False
-                            st.success("Recipient added.")
-                            conn.close()  # st.rerun() aborts this call, skipping the conn.close() at the function's end
-                            st.rerun(scope="fragment")
-                        except Exception as e:
-                            st.error(str(e))
-            with fc2:
-                if st.button("Cancel", key="cancel_add_recipient"):
-                    st.session_state.show_add_recipient = False
-                    conn.close()
-                    st.rerun(scope="fragment")
-
-    recipients = pipeline_db.list_recipients(conn)
-    active = [r for r in recipients if r.get("active") == 1]
-    if not active:
-        st.info("No active recipients. Add one above.")
-        st.divider()
-    else:
-        recipient_widths = [1.5, 1.3, 2, 0.75, 0.75]
-        render_table_header(recipient_widths, ["Display Name", "Role / Department", "Email", "", ""], key="recipients_header")
-        for r in active:
-            rid, email, display_name = r.get("id"), r.get("email", ""), r.get("display_name") or ""
-            role_department = r.get("role_department") or ""
-            edit_key = f"edit_open_{rid}"
-            if edit_key not in st.session_state:
-                st.session_state[edit_key] = False
-            with st.container(key=f"recipients_row_{rid}"):
-                c1, c2, c3, c4, c5 = st.columns(recipient_widths)
-                with c1: render_plain_text(display_name)
-                with c2: render_role_badge(role_department)
-                with c3: render_plain_text(email)
-                with c4:
-                    with st.container(key=f"edit_wrap_{rid}"):
-                        if st.button("Edit", key=f"edit_{rid}", type="tertiary", help="Edit"):
-                            st.session_state.recipients_dialog_target = ("edit", rid)
-                            st.rerun(scope="fragment")
-                with c5:
-                    with st.container(key=f"delete_wrap_{rid}"):
-                        if st.button("Delete", key=f"del_{rid}", type="tertiary", help="Delete"):
-                            st.session_state.recipients_dialog_target = ("delete", rid)
-                            st.rerun(scope="fragment")
-            if st.session_state[edit_key]:
-                with st.container(border=True):
-                    new_email = st.text_input("Email", value=email, key=f"edit_email_{rid}")
-                    new_name = st.text_input("Display name", value=display_name, key=f"edit_name_{rid}")
-                    new_role = render_role_picker(f"edit_{rid}", current_value=role_department)
-                    ec1, ec2 = st.columns([1, 1])
-                    with ec1:
-                        if st.button("Save", key=f"save_{rid}", type="primary"):
+        if "show_add_recipient" not in st.session_state:
+            st.session_state.show_add_recipient = False
+        with st.container(key="add_recipient_cta"):
+            if st.button("Add recipient", icon=":material/add:", type="primary", key="toggle_add_recipient"):
+                st.session_state.recipients_dialog_target = ("add", None)
+                st.rerun(scope="fragment")
+        if st.session_state.show_add_recipient:
+            with st.container(border=True):
+                add_email = st.text_input("Email", key="add_email", placeholder="email@example.com")
+                add_name = st.text_input("Display name (optional)", key="add_name")
+                add_role = render_role_picker("add")
+                fc1, fc2 = st.columns([1, 1])
+                with fc1:
+                    if st.button("Add recipient", key="submit_add_recipient", type="primary"):
+                        if not (add_email and add_email.strip()):
+                            st.error("Email is required.")
+                        else:
                             try:
-                                ok = pipeline_db.update_recipient(conn, rid, email=new_email.strip(), display_name=new_name.strip() or None, role_department=new_role or "")
-                                if ok:
-                                    st.session_state[edit_key] = False
-                                    st.success("Updated.")
-                                    conn.close()
-                                    st.rerun(scope="fragment")
-                                else:
-                                    st.error(f"Update failed: no recipient found with id {rid}. Refresh and try again.")
-                            except Exception as ex:
-                                st.error(str(ex))
-                    with ec2:
-                        if st.button("Cancel", key=f"cancel_edit_{rid}"):
-                            st.session_state[edit_key] = False
-                            conn.close()
-                            st.rerun(scope="fragment")
-            with st.container(key=f"recipients_divider_{rid}"):
-                st.divider()
-    conn.close()
+                                pipeline_db.add_recipient(conn, add_email.strip(), (add_name.strip() or None) if add_name else None, add_role)
+                                st.session_state.show_add_recipient = False
+                                st.success("Recipient added.")
+                                st.rerun(scope="fragment")
+                            except Exception as e:
+                                st.error(str(e))
+                with fc2:
+                    if st.button("Cancel", key="cancel_add_recipient"):
+                        st.session_state.show_add_recipient = False
+                        st.rerun(scope="fragment")
+
+        recipients = pipeline_db.list_recipients(conn)
+        active = [r for r in recipients if r.get("active") == 1]
+        if not active:
+            st.info("No active recipients. Add one above.")
+            st.divider()
+        else:
+            recipient_widths = [1.5, 1.3, 2, 0.75, 0.75]
+            render_table_header(recipient_widths, ["Display Name", "Role / Department", "Email", "", ""], key="recipients_header")
+            for r in active:
+                rid, email, display_name = r.get("id"), r.get("email", ""), r.get("display_name") or ""
+                role_department = r.get("role_department") or ""
+                edit_key = f"edit_open_{rid}"
+                if edit_key not in st.session_state:
+                    st.session_state[edit_key] = False
+                with st.container(key=f"recipients_row_{rid}"):
+                    c1, c2, c3, c4, c5 = st.columns(recipient_widths)
+                    with c1: render_plain_text(display_name)
+                    with c2: render_role_badge(role_department)
+                    with c3: render_plain_text(email)
+                    with c4:
+                        with st.container(key=f"edit_wrap_{rid}"):
+                            if st.button("Edit", key=f"edit_{rid}", type="tertiary", help="Edit"):
+                                st.session_state.recipients_dialog_target = ("edit", rid)
+                                st.rerun(scope="fragment")
+                    with c5:
+                        with st.container(key=f"delete_wrap_{rid}"):
+                            if st.button("Delete", key=f"del_{rid}", type="tertiary", help="Delete"):
+                                st.session_state.recipients_dialog_target = ("delete", rid)
+                                st.rerun(scope="fragment")
+                if st.session_state[edit_key]:
+                    with st.container(border=True):
+                        new_email = st.text_input("Email", value=email, key=f"edit_email_{rid}")
+                        new_name = st.text_input("Display name", value=display_name, key=f"edit_name_{rid}")
+                        new_role = render_role_picker(f"edit_{rid}", current_value=role_department)
+                        ec1, ec2 = st.columns([1, 1])
+                        with ec1:
+                            if st.button("Save", key=f"save_{rid}", type="primary"):
+                                try:
+                                    ok = pipeline_db.update_recipient(conn, rid, email=new_email.strip(), display_name=new_name.strip() or None, role_department=new_role or "")
+                                    if ok:
+                                        st.session_state[edit_key] = False
+                                        st.success("Updated.")
+                                        st.rerun(scope="fragment")
+                                    else:
+                                        st.error(f"Update failed: no recipient found with id {rid}. Refresh and try again.")
+                                except Exception as ex:
+                                    st.error(str(ex))
+                        with ec2:
+                            if st.button("Cancel", key=f"cancel_edit_{rid}"):
+                                st.session_state[edit_key] = False
+                                st.rerun(scope="fragment")
+                with st.container(key=f"recipients_divider_{rid}"):
+                    st.divider()
+    finally:
+        conn.close()
 
 # --- Tab 3: Delivery logs ---
 def render_delivery_logs_tab(conn):
@@ -782,18 +795,22 @@ def main():
         return
 
     # --- Local pipeline mode ---
+    _ensure_schema_once()  # before any other connection this file opens — see its docstring
     db_path = get_db_path()
-    conn = pipeline_db.get_connection(db_path)
+    conn = pipeline_db.get_connection(db_path, init_schema=False)
 
-    tab_report, tab_recipients, tab_delivery = st.tabs(["Latest report", "Recipients", "Delivery logs"])
-    with tab_report:
-        render_latest_report_tab(conn)
-    with tab_recipients:
-        render_recipients_tab(db_path)
-    with tab_delivery:
-        render_delivery_logs_tab(conn)
-
-    conn.close()
+    try:
+        tab_report, tab_recipients, tab_delivery = st.tabs(["Latest report", "Recipients", "Delivery logs"])
+        with tab_report:
+            render_latest_report_tab(conn)
+            conn.commit()  # end this tab's read transaction so it holds no locks while Recipients opens its own connection
+        with tab_recipients:
+            render_recipients_tab(db_path)
+        with tab_delivery:
+            render_delivery_logs_tab(conn)
+            conn.commit()
+    finally:
+        conn.close()
     st.sidebar.divider()
     if pipeline_config.DATABASE_URL:
         st.sidebar.caption("Using shared hosted DB (DATABASE_URL). Recipients and reports are shared with the scheduled pipeline.")

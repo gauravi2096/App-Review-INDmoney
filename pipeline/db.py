@@ -289,8 +289,17 @@ def _pg_connection_url() -> str:
     return url
 
 
-def get_connection(db_path: Optional[str] = None):
-    """Return a connection: PostgreSQL if DATABASE_URL is set, else SQLite at db_path or config.DB_PATH."""
+def get_connection(db_path: Optional[str] = None, init_schema: bool = True):
+    """Return a connection: PostgreSQL if DATABASE_URL is set, else SQLite at db_path or config.DB_PATH.
+
+    init_schema=True (the default, and the only behavior pipeline code paths use) runs
+    CREATE/ALTER on every call, as before. Callers that open many short-lived connections within
+    one process (the Streamlit dashboard) should pass init_schema=False once the schema is known
+    to be current, and run it exactly once themselves — see streamlit_app.py's _ensure_schema_once().
+    In Postgres, ALTER TABLE ... ADD COLUMN IF NOT EXISTS still takes an ACCESS EXCLUSIVE lock
+    even when the column already exists, which can self-deadlock against another connection in
+    the same process that's left a read transaction idle (PgConnection has autocommit=False, so
+    a bare SELECT with no explicit commit/rollback holds its ACCESS SHARE locks open)."""
     if config.DATABASE_URL:
         import psycopg2
         url = _pg_connection_url()
@@ -299,7 +308,8 @@ def get_connection(db_path: Optional[str] = None):
             try:
                 raw = psycopg2.connect(url, connect_timeout=25)
                 conn = PgConnection(raw)
-                _init_schema_pg(conn)
+                if init_schema:
+                    _init_schema_pg(conn)
                 return conn
             except psycopg2.OperationalError as e:
                 last_err = e
@@ -315,7 +325,8 @@ def get_connection(db_path: Optional[str] = None):
     # so relaxing sqlite3's same-thread check is safe here.
     conn = sqlite3.connect(path, check_same_thread=False)
     conn.row_factory = sqlite3.Row
-    _init_schema_sqlite(conn)
+    if init_schema:
+        _init_schema_sqlite(conn)
     return conn
 
 
